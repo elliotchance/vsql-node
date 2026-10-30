@@ -1,0 +1,74 @@
+name: Release
+
+# The addon is prebuilt for each OS and architecture for each push to main (and
+# pull request), and the package (with the prebuilds) is published to npm when a
+# GitHub release is published. The version is the release's tag (v1.2.3 is
+# 1.2.3). It's published with trusted publishing, so there's no npm token.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+
+jobs:
+  prebuild:
+    name: Prebuild for ${{ matrix.os }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is built on Debian 11, so the prebuilds work with glibc 2.29 or
+          # later. With musl (such as Alpine), the addon is compiled when it's
+          # installed.
+          - { os: Linux, arch: x86-64, runner: ubuntu-latest, container: "node:22-bullseye" }
+          - { os: Linux, arch: ARM64, runner: ubuntu-24.04-arm, container: "node:22-bullseye" }
+          - { os: macOS, arch: x86-64, runner: macos-15-intel }
+          - { os: macOS, arch: ARM64, runner: macos-latest }
+          - { os: Windows, arch: x86-64, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        if: ${{ !matrix.container }}
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run prebuildify
+      # Test the prebuild, rather than the addon that npm install compiled.
+      - run: rm -rf build
+        shell: bash
+      - run: npm test
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prebuilds-${{ matrix.os }}-${{ matrix.arch }}
+          path: prebuilds
+
+  publish:
+    name: Publish to npm
+    if: github.event_name == 'release'
+    needs: [prebuild]
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/vsql-node
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: prebuilds-*
+          path: prebuilds
+          merge-multiple: true
+      - run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+      - run: npm publish

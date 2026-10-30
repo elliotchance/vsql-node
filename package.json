@@ -1,0 +1,47 @@
+{
+  "name": "vsql-node",
+  "version": "0.0.0",
+  "description": "A Node.js driver for vsql, a single file or in-memory SQL database.",
+  "keywords": [
+    "vsql",
+    "sql",
+    "database",
+    "embedded"
+  ],
+  "homepage": "https://github.com/elliotchance/vsql-node",
+  "bugs": "https://github.com/elliotchance/vsql-node/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elliotchance/vsql-node.git"
+  },
+  "license": "MIT",
+  "author": "Elliot Chance <elliotchance@gmail.com>",
+  "main": "lib/index.js",
+  "types": "index.d.ts",
+  "files": [
+    "lib",
+    "src",
+    "internal/amalgamation",
+    "prebuilds",
+    "binding.gyp",
+    "libvsql_flags.gypi",
+    "index.d.ts"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "gypfile": true,
+  "scripts": {
+    "install": "node-gyp-build",
+    "build": "node-gyp rebuild",
+    "prebuildify": "prebuildify --napi --strip --tag-libc",
+    "test": "node --expose-gc --test"
+  },
+  "dependencies": {
+    "node-gyp-build": "^4.8.4"
+  },
+  "devDependencies": {
+    "node-gyp": "^13.1.0",
+    "prebuildify": "^6.0.1"
+  }
+}

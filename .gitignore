@@ -1,0 +1,6 @@
+*.vsql
+*.vsql.*
+node_modules/
+build/
+prebuilds/
+*.tgz

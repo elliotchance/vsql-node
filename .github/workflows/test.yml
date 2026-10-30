@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} (${{ matrix.arch }}), Node ${{ matrix.node }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [Linux, macOS, Windows]
+        arch: [x86-64, ARM64]
+        node: ["22", "24", "26"]
+        include:
+          - { os: Linux, arch: x86-64, runner: ubuntu-latest }
+          - { os: Linux, arch: ARM64, runner: ubuntu-24.04-arm }
+          - { os: macOS, arch: x86-64, runner: macos-15-intel }
+          - { os: macOS, arch: ARM64, runner: macos-latest }
+          - { os: Windows, arch: x86-64, runner: windows-latest }
+        exclude:
+          # There's no libvsql C for Windows ARM64.
+          - { os: Windows, arch: ARM64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      # Compiles the addon, since there are no prebuilds.
+      - run: npm install
+      - run: npm test
+      - run: node example/main.js

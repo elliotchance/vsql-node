@@ -21,7 +21,7 @@ jobs:
           - { os: macOS, arch: ARM64, runner: macos-latest }
           - { os: Windows, arch: x86-64, runner: windows-latest }
         exclude:
-          # There's no libvsql C for Windows ARM64.
+          # Windows ARM64 isn't tested yet.
           - { os: Windows, arch: ARM64 }
     runs-on: ${{ matrix.runner }}
     steps:

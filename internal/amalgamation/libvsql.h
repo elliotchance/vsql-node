@@ -2,8 +2,10 @@
  * libvsql.h declares the SQL/CLI (ISO/IEC 9075-3) routines implemented by
  * libvsql, the shared library for using vsql from C (and any language that can
  * call C functions). The types and codes are the ones from Annex A, "Typical
- * header files". The routines that aren't implemented yet are listed in
- * https://vsql.readthedocs.io/en/latest/sql-compliance.html#cli-routines
+ * header files". The codes are also in the tables of ISO/IEC 9075-3:2003,
+ * 5.14, Other tables associated with CLI. The routines that aren't implemented
+ * yet are listed in
+ * https://vsql.readthedocs.io/en/latest/sql-compliance-9075-3.html#cli-routines
  *
  * This header is C99, and also works with C++11.
  *
@@ -79,19 +81,36 @@
  *   DOUBLE PRECISION, FLOAT  SQL_DOUBLE                       numbers, SQL_CHAR
  *   DECIMAL                  SQL_DECIMAL                      numbers, SQL_CHAR
  *   NUMERIC                  SQL_NUMERIC                      numbers, SQL_CHAR
+ *   DECFLOAT                 SQL_DECFLOAT                     numbers, SQL_CHAR
+ *   BINARY                   SQL_BINARY                       binary strings
+ *   BINARY VARYING           SQL_VARBINARY                    binary strings
+ *   BINARY LARGE OBJECT      SQL_BLOB                         binary strings
  *   CHARACTER                SQL_CHAR                         SQL_CHAR
  *   CHARACTER VARYING        SQL_VARCHAR                      SQL_CHAR
+ *   CHARACTER LARGE OBJECT   SQL_CLOB                         SQL_CHAR, SQL_CLOB
  *   BOOLEAN                  SQL_BOOLEAN                      SQL_CHAR
  *   DATE                     SQL_TYPE_DATE                    SQL_CHAR
  *   TIME                     SQL_TYPE_TIME                    SQL_CHAR
  *   TIME WITH TIME ZONE      SQL_TYPE_TIME_WITH_TIMEZONE      SQL_CHAR
  *   TIMESTAMP                SQL_TYPE_TIMESTAMP               SQL_CHAR
  *   TIMESTAMP WITH TIME ZONE SQL_TYPE_TIMESTAMP_WITH_TIMEZONE SQL_CHAR
+ *   INTERVAL ...             SQL_INTERVAL_YEAR, ...           SQL_CHAR
+ *
+ * An interval is retrieved as its literal, such as
+ * "INTERVAL '1-02' YEAR(2) TO MONTH", and bound from a literal or a string such
+ * as "1-2". SQL_CLOB is the same as SQL_CHAR.
+ *
+ * "binary strings" is SQL_BINARY, SQL_VARBINARY or SQL_BLOB, which are the octets of the
+ * value in an array of unsigned char (without a null terminator), and its length
+ * in octets (a value of BufferLength octets, or the StrLen_or_Ind of
+ * SQLBindParameter). A binary string can't be retrieved as (or bound from) any
+ * other C type, and no other value can be retrieved as a binary string (07006).
  *
  * "numbers" is SQL_SMALLINT, SQL_INTEGER, SQL_BIGINT, SQL_REAL or SQL_DOUBLE
  * (a value out of range is 22003). SQL_DEFAULT retrieves a column as its own
  * type, so it only works for the types that have a C type (SMALLINT, INTEGER,
- * BIGINT, REAL, DOUBLE PRECISION and CHARACTER), otherwise it's 07002.
+ * BIGINT, REAL, DOUBLE PRECISION, CHARACTER, CHARACTER LARGE OBJECT, BINARY,
+ * BINARY VARYING and BINARY LARGE OBJECT), otherwise it's 07002.
  */
 
 #ifndef LIBVSQL_H
@@ -156,9 +175,24 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_REAL     7  /* REAL, or SQLREAL */
 #define SQL_DOUBLE   8  /* DOUBLE PRECISION, SQLDOUBLE */
 #define SQL_DATETIME 9  /* any datetime type */
+#define SQL_INTERVAL 10 /* any interval type */
 #define SQL_VARCHAR  12 /* CHARACTER VARYING */
 #define SQL_BOOLEAN  16 /* BOOLEAN */
 #define SQL_BIGINT   25 /* BIGINT, or SQLBIGINT */
+#define SQL_DECFLOAT 26 /* DECFLOAT (not in SQL/CLI 2003, see Part 2, Table 30) */
+#define SQL_BLOB     30 /* BINARY LARGE OBJECT, or an array of unsigned char */
+#define SQL_CLOB     40 /* CHARACTER LARGE OBJECT, or a C string */
+
+/* BINARY and BINARY VARYING aren't in SQL/CLI 2003, so these are their codes
+ * in dynamic SQL (Part 2, Table 30). The C data type of each is an array of
+ * unsigned char, with a length in octets. */
+#define SQL_BINARY    60 /* BINARY */
+#define SQL_VARBINARY 61 /* BINARY VARYING */
+
+/* Large object locator types, for the LocatorType of SQLGetLength,
+ * SQLGetPosition and SQLGetSubString. */
+#define SQL_BLOB_LOCATOR 31 /* BINARY LARGE OBJECT LOCATOR */
+#define SQL_CLOB_LOCATOR 41 /* CHARACTER LARGE OBJECT LOCATOR */
 
 /* SQL_DESC_DATETIME_INTERVAL_CODEs of SQL_DATETIME. */
 #define SQL_CODE_DATE           1 /* DATE */
@@ -174,6 +208,37 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_TYPE_TIME_WITH_TIMEZONE      94 /* TIME WITH TIME ZONE */
 #define SQL_TYPE_TIMESTAMP_WITH_TIMEZONE 95 /* TIMESTAMP WITH TIME ZONE */
 
+/* SQL_DESC_DATETIME_INTERVAL_CODEs of SQL_INTERVAL. */
+#define SQL_CODE_YEAR                 1  /* YEAR */
+#define SQL_CODE_MONTH                2  /* MONTH */
+#define SQL_CODE_DAY                  3  /* DAY */
+#define SQL_CODE_HOUR                 4  /* HOUR */
+#define SQL_CODE_MINUTE               5  /* MINUTE */
+#define SQL_CODE_SECOND               6  /* SECOND */
+#define SQL_CODE_YEAR_TO_MONTH        7  /* YEAR TO MONTH */
+#define SQL_CODE_DAY_TO_HOUR          8  /* DAY TO HOUR */
+#define SQL_CODE_DAY_TO_MINUTE        9  /* DAY TO MINUTE */
+#define SQL_CODE_DAY_TO_SECOND        10 /* DAY TO SECOND */
+#define SQL_CODE_HOUR_TO_MINUTE       11 /* HOUR TO MINUTE */
+#define SQL_CODE_HOUR_TO_SECOND       12 /* HOUR TO SECOND */
+#define SQL_CODE_MINUTE_TO_SECOND     13 /* MINUTE TO SECOND */
+
+/* Concise codes for interval data types, which are the DATA_TYPE of
+ * SQLDescribeCol (and the ParameterType of SQLBindParameter). */
+#define SQL_INTERVAL_YEAR             101 /* INTERVAL YEAR */
+#define SQL_INTERVAL_MONTH            102 /* INTERVAL MONTH */
+#define SQL_INTERVAL_DAY              103 /* INTERVAL DAY */
+#define SQL_INTERVAL_HOUR             104 /* INTERVAL HOUR */
+#define SQL_INTERVAL_MINUTE           105 /* INTERVAL MINUTE */
+#define SQL_INTERVAL_SECOND           106 /* INTERVAL SECOND */
+#define SQL_INTERVAL_YEAR_TO_MONTH    107 /* INTERVAL YEAR TO MONTH */
+#define SQL_INTERVAL_DAY_TO_HOUR      108 /* INTERVAL DAY TO HOUR */
+#define SQL_INTERVAL_DAY_TO_MINUTE    109 /* INTERVAL DAY TO MINUTE */
+#define SQL_INTERVAL_DAY_TO_SECOND    110 /* INTERVAL DAY TO SECOND */
+#define SQL_INTERVAL_HOUR_TO_MINUTE   111 /* INTERVAL HOUR TO MINUTE */
+#define SQL_INTERVAL_HOUR_TO_SECOND   112 /* INTERVAL HOUR TO SECOND */
+#define SQL_INTERVAL_MINUTE_TO_SECOND 113 /* INTERVAL MINUTE TO SECOND */
+
 /* Special TargetType values for SQLGetData. */
 #define SQL_ARD_TYPE (-99) /* the type in the ARD */
 #define SQL_DEFAULT  99    /* the type of the column */
@@ -184,7 +249,7 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_DIAG_ROW_COUNT                3  /* see SQLRowCount */
 #define SQL_DIAG_DYNAMIC_FUNCTION         7  /* the statement executed */
 #define SQL_DIAG_DYNAMIC_FUNCTION_CODE    12 /* the code of the statement */
-#define SQL_DIAG_MORE                     13 /* always 0 */
+#define SQL_DIAG_MORE                     13 /* 1 if a condition was dropped */
 #define SQL_DIAG_TRANSACTIONS_COMMITTED   34 /* transactions committed */
 #define SQL_DIAG_TRANSACTIONS_ROLLED_BACK 35 /* transactions rolled back */
 #define SQL_DIAG_TRANSACTION_ACTIVE       36 /* 1 if one is active */
@@ -198,14 +263,14 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_DIAG_CONNECTION_NAME            10      /* the ServerName */
 #define SQL_DIAG_SERVER_NAME                11      /* the ServerName */
 #define SQL_DIAG_CONDITION_NUMBER           14      /* the record number */
-#define SQL_DIAG_CONSTRAINT_CATALOG         15      /* always "" */
-#define SQL_DIAG_CONSTRAINT_SCHEMA          16      /* always "" */
-#define SQL_DIAG_CONSTRAINT_NAME            17      /* always "" */
-#define SQL_DIAG_CATALOG_NAME               18      /* always "" */
-#define SQL_DIAG_SCHEMA_NAME                19      /* always "" */
-#define SQL_DIAG_TABLE_NAME                 20      /* always "" */
-#define SQL_DIAG_COLUMN_NAME                21      /* always "" */
-#define SQL_DIAG_CURSOR_NAME                22      /* always "" */
+#define SQL_DIAG_CONSTRAINT_CATALOG         15      /* the violated constraint */
+#define SQL_DIAG_CONSTRAINT_SCHEMA          16      /* its schema */
+#define SQL_DIAG_CONSTRAINT_NAME            17      /* its name */
+#define SQL_DIAG_CATALOG_NAME               18      /* the table's catalog */
+#define SQL_DIAG_SCHEMA_NAME                19      /* its schema */
+#define SQL_DIAG_TABLE_NAME                 20      /* the table */
+#define SQL_DIAG_COLUMN_NAME                21      /* for 42703 */
+#define SQL_DIAG_CURSOR_NAME                22      /* for 24000 */
 #define SQL_DIAG_MESSAGE_LENGTH             23      /* in characters */
 #define SQL_DIAG_MESSAGE_OCTET_LENGTH       24      /* in octets */
 #define SQL_DIAG_CONDITION_IDENTIFIER       25      /* always "" */
@@ -247,7 +312,7 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_ATTR_OUTPUT_NTS 10001 /* null terminate strings */
 
 /* Connection attributes. */
-#define SQL_ATTR_AUTO_IPD       10001 /* always SQL_FALSE */
+#define SQL_ATTR_AUTO_IPD       10001 /* always SQL_TRUE */
 #define SQL_ATTR_SAVEPOINT_NAME 10027 /* a savepoint for SQLEndTran */
 #define SQL_ATTR_AUTOCOMMIT     102   /* see SQLSetConnectAttr */
 
@@ -258,20 +323,20 @@ typedef SQLINTEGER SQLHDESC;
 /* SQLEndTran CompletionTypes. */
 #define SQL_COMMIT                  0 /* commit */
 #define SQL_ROLLBACK                1 /* roll back */
-#define SQL_SAVEPOINT_NAME_ROLLBACK 2 /* not supported */
-#define SQL_SAVEPOINT_NAME_RELEASE  4 /* not supported */
+#define SQL_SAVEPOINT_NAME_ROLLBACK 2 /* roll back to a savepoint */
+#define SQL_SAVEPOINT_NAME_RELEASE  4 /* destroy a savepoint */
 #define SQL_COMMIT_AND_CHAIN        6 /* commit and start another */
 #define SQL_ROLLBACK_AND_CHAIN      7 /* roll back and start another */
 
 /* SQLStartTran AccessModes. */
-#define SQL_TRANSACTION_READ_ONLY  0x00000001L /* not supported */
+#define SQL_TRANSACTION_READ_ONLY  0x00000001L /* only read */
 #define SQL_TRANSACTION_READ_WRITE 0x00000002L /* read and write */
 
 /* SQLStartTran IsolationLevels. */
 #define SQL_TRANSACTION_READ_UNCOMMITTED 0x00000001L /* READ COMMITTED */
 #define SQL_TRANSACTION_READ_COMMITTED   0x00000002L /* READ COMMITTED */
-#define SQL_TRANSACTION_REPEATABLE_READ  0x00000004L /* not supported */
-#define SQL_TRANSACTION_SERIALIZABLE     0x00000008L /* not supported */
+#define SQL_TRANSACTION_REPEATABLE_READ  0x00000004L /* SERIALIZABLE */
+#define SQL_TRANSACTION_SERIALIZABLE     0x00000008L /* SERIALIZABLE */
 
 /* SQLGetSessionInfo InfoTypes. */
 #define SQL_CURRENT_USER                    47    /* CURRENT_USER */
@@ -295,9 +360,9 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_SET_DEFAULT 4 /* SET DEFAULT */
 
 /* DEFERABILITY of SQLForeignKeys. */
-#define SQL_INITIALLY_DEFERRED  5 /* not used */
-#define SQL_INITIALLY_IMMEDIATE 6 /* not used */
-#define SQL_NOT_DEFERRABLE      7 /* every constraint */
+#define SQL_INITIALLY_DEFERRED  5 /* DEFERRABLE INITIALLY DEFERRED */
+#define SQL_INITIALLY_IMMEDIATE 6 /* DEFERRABLE INITIALLY IMMEDIATE */
+#define SQL_NOT_DEFERRABLE      7 /* NOT DEFERRABLE */
 
 /* SQLSpecialColumns IdentifierType, Scope and PSEUDO_COLUMN. */
 #define SQL_BEST_ROWID        1 /* the columns that identify a row */
@@ -316,7 +381,7 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_SERVER_NAME                   13    /* the ServerName */
 #define SQL_SEARCH_PATTERN_ESCAPE         14    /* "\\" */
 #define SQL_DBMS_NAME                     17    /* "vsql" */
-#define SQL_DBMS_VERSION                  18    /* "01.02.0003 v1.2.3 ..." */
+#define SQL_DBMS_VERSION                  18    /* "01.02.0003" */
 #define SQL_CURSOR_COMMIT_BEHAVIOR        23    /* SMALLINT, SQL_CB_* */
 #define SQL_DATA_SOURCE_READ_ONLY         25    /* "N" */
 #define SQL_DEFAULT_TRANSACTION_ISOLATION 26    /* INTEGER, SQL_TRANSACTION_* */
@@ -348,6 +413,16 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_CATALOG_NAME                  10003 /* "Y" */
 #define SQL_COLLATING_SEQUENCE            10004 /* "" */
 #define SQL_MAXIMUM_IDENTIFIER_LENGTH     10005 /* SMALLINT, 128 */
+#define SQL_VSQL_BUILD_VERSION            11000 /* "v1.2.3", "" if not a release */
+#define SQL_VSQL_BUILD_COMMIT             11001 /* git commit, "" if not a release */
+#define SQL_VSQL_BUILD_DATE               11002 /* "2026-11-12" (UTC) */
+#define SQL_VSQL_BUILD_V_VERSION          11003 /* "0.5.2" */
+#define SQL_VSQL_BUILD_V_COMMIT           11004 /* "5634a1f" */
+#define SQL_VSQL_BUILD_C_COMPILER         11005 /* "clang" */
+#define SQL_VSQL_OPERATING_SYSTEM         11006 /* "macos" */
+#define SQL_VSQL_MACHINE                  11007 /* "arm64" */
+#define SQL_VSQL_FILE_READ_VERSION        11008 /* SMALLINT, 0 for :memory: */
+#define SQL_VSQL_FILE_WRITE_VERSION       11009 /* SMALLINT, 0 for :memory: */
 #define SQL_MAXIMUM_STMT_OCTETS           20000 /* SMALLINT, 0 (no limit) */
 #define SQL_MAXIMUM_STMT_OCTETS_DATA      20001 /* SMALLINT, 0 (no limit) */
 #define SQL_MAXIMUM_STMT_OCTETS_SCHEMA    20002 /* SMALLINT, 0 (no limit) */
@@ -502,14 +577,14 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_DESC_ARRAY_STATUS_POINTER   21   /* SQLINTEGER[] row statuses */
 #define SQL_DESC_ROWS_PROCESSED_POINTER 34   /* SQLINTEGER * rows fetched */
 #define SQL_DESC_COUNT                  1001 /* the number of records */
-#define SQL_DESC_KEY_TYPE               1029 /* always 0 */
+#define SQL_DESC_KEY_TYPE               1029
 #define SQL_DESC_DYNAMIC_FUNCTION       1031 /* the statement */
 #define SQL_DESC_DYNAMIC_FUNCTION_CODE  1032 /* the code of the statement */
 #define SQL_DESC_TOP_LEVEL_COUNT        1044 /* the number of columns */
 #define SQL_DESC_ALLOC_TYPE             1099 /* SQL_DESC_ALLOC_AUTO or USER */
 
 /* Descriptor record fields. */
-#define SQL_DESC_DATETIME_INTERVAL_PRECISION  26   /* not used */
+#define SQL_DESC_DATETIME_INTERVAL_PRECISION  26   /* leading field precision */
 #define SQL_DESC_TYPE                         1002 /* the data type */
 #define SQL_DESC_LENGTH                       1003 /* in characters */
 #define SQL_DESC_OCTET_LENGTH_POINTER         1004 /* SQLINTEGER *length */
@@ -536,7 +611,7 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_DESC_UDT_CATALOG                  1026 /* not used */
 #define SQL_DESC_UDT_SCHEMA                   1027 /* not used */
 #define SQL_DESC_UDT_NAME                     1028 /* not used */
-#define SQL_DESC_KEY_MEMBER                   1030 /* always 0 */
+#define SQL_DESC_KEY_MEMBER                   1030
 #define SQL_DESC_SCOPE_CATALOG                1033 /* not used */
 #define SQL_DESC_SCOPE_SCHEMA                 1034 /* not used */
 #define SQL_DESC_SCOPE_NAME                   1035 /* not used */
@@ -641,11 +716,13 @@ SQLRETURN SQLBindCol(
  * statement. ParameterType (such as SQL_VARCHAR or SQL_TYPE_DATE) is its SQL
  * data type, with ColumnSize as the length of a string, or the precision of a
  * number (and DecimalDigits as its scale), or the fractional seconds of a
- * datetime. When the statement is executed, ParameterValue (of ValueType, see
- * SQLGetData) is cast to that type.
+ * datetime (0 to 6). When the statement is executed, ParameterValue (of
+ * ValueType, see SQLGetData) is cast to that type, and then to the type of the
+ * dynamic parameter (see SQLPrepare).
  *
- * StrLen_or_Ind is the length in octets of a string (or SQL_NTS), and it may
- * be SQL_NULL_DATA for a NULL, or SQL_DATA_AT_EXEC to give the value with
+ * StrLen_or_Ind is the length in octets of a string, which must be greater
+ * than zero (or SQL_NTS, which also allows an empty string), and it may be
+ * SQL_NULL_DATA for a NULL, or SQL_DATA_AT_EXEC to give the value with
  * SQLParamData and SQLPutData. BufferLength is the size of ParameterValue.
  * InputOutputMode must be SQL_PARAM_MODE_IN (or SQL_PARAM_MODE_INOUT, which is
  * the same).
@@ -673,7 +750,8 @@ SQLRETURN SQLBindParameter(
 /*
  * SQLCancel cancels a routine that's running on the statement. libvsql isn't
  * thread safe, so there's never one running and SQLCancel only clears the
- * diagnostics of the statement.
+ * diagnostics of the statement. It also ends a statement that's waiting for
+ * the values of its SQL_DATA_AT_EXEC parameters (see SQLParamData).
  */
 SQLRETURN SQLCancel(
     SQLHSTMT StatementHandle
@@ -718,8 +796,9 @@ SQLRETURN SQLColAttribute(
 /*
  * SQLColumnPrivileges would return a result set that describes the privileges
  * of columns.
- * vsql doesn't have privileges, so it always returns SQL_ERROR with SQLSTATE
- * HYC00 (optional feature not implemented).
+ * vsql doesn't have privileges, so it always returns SQL_ERROR. The arguments
+ * are checked like those of SQLColumns (SQLSTATE 24000, HY009 or HY090), then
+ * it's SQLSTATE HYC00 (optional feature not implemented).
  */
 SQLRETURN SQLColumnPrivileges(
     SQLHSTMT     StatementHandle,
@@ -772,10 +851,10 @@ SQLRETURN SQLColumns(
  *
  * The new connection becomes the current connection. Using a statement,
  * descriptor or connection of another connection makes that one current
- * instead. Each connection is a different database, and a transaction can't
- * span more than one, so while the current connection has an active
- * transaction, connecting or switching to another connection is 0A001. End
- * the transaction with SQLEndTran first.
+ * instead. Each connection is a different database, and a transaction can span
+ * more than one: while the current connection has an active transaction, a
+ * statement on another connection starts a branch of it there, and SQLEndTran
+ * with any of them ends every branch.
  *
  *   SQLConnect(dbc, (SQLCHAR *)"test.vsql", SQL_NTS, NULL, 0, NULL, 0);
  */
@@ -869,8 +948,12 @@ SQLRETURN SQLDisconnect(
  * transaction of a connection (SQL_HANDLE_DBC), or of every connection of an
  * environment (SQL_HANDLE_ENV). SQL_COMMIT_AND_CHAIN and
  * SQL_ROLLBACK_AND_CHAIN also start a new transaction. A rollback closes every
- * cursor of the connection, but a commit doesn't. There are no savepoints, so
- * SQL_SAVEPOINT_NAME_ROLLBACK and SQL_SAVEPOINT_NAME_RELEASE are 3B001.
+ * cursor of the connection, but a commit doesn't.
+ *
+ * SQL_SAVEPOINT_NAME_ROLLBACK and SQL_SAVEPOINT_NAME_RELEASE use the savepoint in
+ * SQL_ATTR_SAVEPOINT_NAME, of a connection (SQL_HANDLE_DBC) only. It's 3B001 if it
+ * doesn't exist. A savepoint is made by SQLExecDirect with SAVEPOINT. A rollback
+ * closes every cursor of the connection that isn't holdable.
  *
  *   SQLExecDirect(stmt, (SQLCHAR *)"INSERT INTO foo (x) VALUES (1.23)",
  *                 SQL_NTS);
@@ -916,7 +999,9 @@ SQLRETURN SQLError(
  *
  * A transaction is started if there isn't one, and it must be ended with
  * SQLEndTran, so START TRANSACTION, COMMIT and ROLLBACK can't be executed
- * (42000). A "--" comment isn't allowed either (42000).
+ * (42000). A "--" comment isn't allowed either (42000). A DELETE, INSERT or
+ * UPDATE that doesn't change any rows returns SQL_NO_DATA (with no status
+ * record).
  *
  *   SQLExecDirect(stmt, (SQLCHAR *)"CREATE TABLE foo (x DOUBLE PRECISION)",
  *                 SQL_NTS);
@@ -985,7 +1070,7 @@ SQLRETURN SQLFetchScroll(
  * Its columns are UK_TABLE_CAT, UK_TABLE_SCHEM, UK_TABLE_NAME, UK_COLUMN_NAME,
  * FK_TABLE_CAT, FK_TABLE_SCHEM, FK_TABLE_NAME, FK_COLUMN_NAME,
  * ORDINAL_POSITION, UPDATE_RULE and DELETE_RULE (such as SQL_CASCADE),
- * FK_NAME, UK_NAME, DEFERABILITY (always SQL_NOT_DEFERRABLE) and
+ * FK_NAME, UK_NAME, DEFERABILITY and
  * UNIQUE_OR_PRIMARY ("UNIQUE " or "PRIMARY").
  */
 SQLRETURN SQLForeignKeys(
@@ -1053,7 +1138,7 @@ SQLRETURN SQLFreeStmt(
 /*
  * SQLGetConnectAttr reads an attribute of a connection:
  *
- *   SQL_ATTR_AUTO_IPD        SQLINTEGER, always SQL_FALSE
+ *   SQL_ATTR_AUTO_IPD        SQLINTEGER, always SQL_TRUE
  *   SQL_ATTR_SAVEPOINT_NAME  string, see SQLGetData for SQL_CHAR
  *   SQL_ATTR_AUTOCOMMIT      SQLINTEGER, SQL_AUTOCOMMIT_OFF or _ON
  *
@@ -1201,7 +1286,8 @@ SQLRETURN SQLGetDescRec(
  *   SQL_DIAG_TRANSACTIONS_COMMITTED    transactions committed by the routine
  *   SQL_DIAG_TRANSACTIONS_ROLLED_BACK  transactions rolled back by the routine
  *   SQL_DIAG_TRANSACTION_ACTIVE        1 if a transaction is active, or 0
- *   SQL_DIAG_MORE                      always 0
+ *   SQL_DIAG_MORE                      1 if the statement raised more conditions
+ *                                      than DIAGNOSTICS SIZE, or 0
  *
  *   SQL_DIAG_SQLSTATE                  the SQLSTATE
  *   SQL_DIAG_MESSAGE_TEXT              the message
@@ -1284,7 +1370,8 @@ SQLRETURN SQLGetEnvAttr(
 /*
  * SQLGetFeatureInfo sets Supported to 1 if vsql supports a feature ("FEATURE"
  * with an id such as "E011") or a subfeature ("SUBFEATURE" with "E011" and
- * "01"), otherwise 0. An unknown feature, or a "PACKAGE", is HY024. See
+ * "01"), otherwise 0. An unknown feature, or a "PACKAGE", is HY024. It's read
+ * from the INFORMATION_SCHEMA.SQL_FEATURES view. See
  * https://vsql.readthedocs.io/en/latest/sql-compliance.html
  *
  *   SQLSMALLINT supported;
@@ -1339,8 +1426,11 @@ SQLRETURN SQLGetInfo(
 
 /*
  * SQLGetLength would read the length of the value of a large object locator.
- * vsql doesn't have large objects, so it always returns SQL_ERROR with SQLSTATE
- * HYC00 (optional feature not implemented).
+ * vsql doesn't have large objects, so it always returns SQL_ERROR: SQLSTATE
+ * HY010 (function sequence error) if the statement has been prepared or
+ * executed, HY024 (invalid attribute value) if LocatorType isn't
+ * SQL_BLOB_LOCATOR or SQL_CLOB_LOCATOR, otherwise 0F001 (invalid locator
+ * specification).
  */
 SQLRETURN SQLGetLength(
     SQLHSTMT     StatementHandle,
@@ -1351,9 +1441,9 @@ SQLRETURN SQLGetLength(
 );
 
 /*
- * SQLGetParamData would read the value of a dynamic output parameter. vsql
- * doesn't have procedures (or SQL_PARAM_MODE_OUT), so it always returns
- * SQL_ERROR with SQLSTATE HYC00 (optional feature not implemented).
+ * SQLGetParamData would read the value of a dynamic output parameter of a
+ * CALL statement. vsql doesn't have procedures (or SQL_PARAM_MODE_OUT), so it
+ * always returns SQL_ERROR with SQLSTATE HY010 (function sequence error).
  */
 SQLRETURN SQLGetParamData(
     SQLHSTMT     StatementHandle,
@@ -1367,8 +1457,11 @@ SQLRETURN SQLGetParamData(
 /*
  * SQLGetPosition would find a string within the value of a large object
  * locator.
- * vsql doesn't have large objects, so it always returns SQL_ERROR with SQLSTATE
- * HYC00 (optional feature not implemented).
+ * vsql doesn't have large objects, so it always returns SQL_ERROR: SQLSTATE
+ * HY010 (function sequence error) if the statement has been prepared or
+ * executed, HY092 (invalid attribute identifier) if LocatorType isn't
+ * SQL_BLOB_LOCATOR or SQL_CLOB_LOCATOR, otherwise 0F001 (invalid locator
+ * specification).
  */
 SQLRETURN SQLGetPosition(
     SQLHSTMT     StatementHandle,
@@ -1411,8 +1504,11 @@ SQLRETURN SQLGetStmtAttr(
 
 /*
  * SQLGetSubString would read part of the value of a large object locator.
- * vsql doesn't have large objects, so it always returns SQL_ERROR with SQLSTATE
- * HYC00 (optional feature not implemented).
+ * vsql doesn't have large objects, so it always returns SQL_ERROR: SQLSTATE
+ * HY010 (function sequence error) if the statement has been prepared or
+ * executed, HY024 (invalid attribute value) if LocatorType isn't
+ * SQL_BLOB_LOCATOR or SQL_CLOB_LOCATOR, otherwise 0F001 (invalid locator
+ * specification).
  */
 SQLRETURN SQLGetSubString(
     SQLHSTMT     StatementHandle,
@@ -1480,6 +1576,12 @@ SQLRETURN SQLNumResultCols(
  * the value is given with SQLPutData. After the last one, it executes the
  * statement.
  *
+ * If SQLParamData (or SQLPutData) fails before the statement is executed, such
+ * as when a value can't be cast to the type of its parameter, the statement is
+ * still waiting for its parameters, so every other routine on it fails with
+ * HY010 until SQLCancel is called. A failure when the statement is executed
+ * (after the last parameter) ends it.
+ *
  *   SQLPOINTER p;
  *   SQLINTEGER at_exec = SQL_DATA_AT_EXEC;
  *
@@ -1503,6 +1605,14 @@ SQLRETURN SQLParamData(
  * syntax error is returned by SQLPrepare, but other errors (such as a table
  * that doesn't exist) are only returned by SQLExecute. The same statements are
  * allowed as SQLExecDirect.
+ *
+ * The type of each dynamic parameter is determined from where it's used, such
+ * as the type of x in "x = ?" (see "Prepared Statements" in the docs), and one
+ * whose type can't be determined (such as in "? + ?") is a syntax error. The
+ * IPD (SQL_ATTR_IMP_PARAM_DESC) has a record for each dynamic parameter, with
+ * its type, so SQL_DESC_COUNT is the number of parameters. SQLBindParameter
+ * replaces the record. A parameter whose type isn't known until the statement
+ * is executed (such as when its table doesn't exist yet) keeps its record.
  */
 SQLRETURN SQLPrepare(
     SQLHSTMT    StatementHandle,
@@ -1577,8 +1687,20 @@ SQLRETURN SQLSetConnectAttr(
 /*
  * SQLSetCursorName names the statement's cursor. The name is an identifier
  * (that doesn't start with SQL_CUR or SQLCUR), and two statements of a
- * connection can't have the same name. It isn't used yet, since positioned
- * UPDATE and DELETE are not supported.
+ * connection can't have the same name. Another statement of the connection
+ * can change the current row of the cursor (the CURRENT OF POSITION row of the
+ * rowset) with a positioned DELETE or UPDATE:
+ *
+ *   SQLSetCursorName(stmt, (SQLCHAR *)"c", SQL_NTS);
+ *   SQLExecDirect(stmt, (SQLCHAR *)"SELECT * FROM t", SQL_NTS);
+ *   SQLFetch(stmt);
+ *   SQLExecDirect(stmt2, (SQLCHAR *)"DELETE FROM t WHERE CURRENT OF c",
+ *                 SQL_NTS);
+ *
+ * The cursor must have been opened by then. A statement prepared with
+ * SQLPrepare can be executed again while the cursor is reopened by the same
+ * statement, but it's destroyed with the cursor (by preparing or executing
+ * another statement on stmt, or freeing stmt).
  */
 SQLRETURN SQLSetCursorName(
     SQLHSTMT     StatementHandle,
@@ -1684,11 +1806,13 @@ SQLRETURN SQLSetStmtAttr(
 
 /*
  * SQLSpecialColumns returns a result set that describes the columns that
- * identify a row of a table (SQL_BEST_ROWID), which are its PRIMARY KEY. Its
- * columns are SCOPE (always SQL_SCOPE_SESSION), COLUMN_NAME, DATA_TYPE,
- * TYPE_NAME, COLUMN_SIZE, BUFFER_LENGTH, DECIMAL_DIGITS and PSEUDO_COLUMN
- * (always SQL_PC_NOT_PSEUDO). Scope is the minimum SCOPE, and Nullable is
- * SQL_NO_NULLS or SQL_NULLABLE (the columns of a PRIMARY KEY are never NULL).
+ * identify a row of a table (SQL_BEST_ROWID). They are its PRIMARY KEY or,
+ * without one, the UNIQUE constraint whose columns are all NOT NULL with the
+ * fewest columns (then the first by constraint name). Its columns are SCOPE
+ * (always SQL_SCOPE_SESSION), COLUMN_NAME, DATA_TYPE, TYPE_NAME, COLUMN_SIZE,
+ * BUFFER_LENGTH, DECIMAL_DIGITS and PSEUDO_COLUMN (always SQL_PC_NOT_PSEUDO).
+ * Scope is the minimum SCOPE, and Nullable is SQL_NO_NULLS or SQL_NULLABLE
+ * (the columns are never NULL).
  */
 SQLRETURN SQLSpecialColumns(
     SQLHSTMT     StatementHandle,
@@ -1704,13 +1828,14 @@ SQLRETURN SQLSpecialColumns(
 );
 
 /*
- * SQLStartTran starts a transaction for a connection (SQL_HANDLE_DBC), or the
- * connection of an environment (SQL_HANDLE_ENV, which is 0A001 if it has more
- * than one). The connection becomes the current connection (see SQLConnect).
- * A transaction is also started by SQLExecDirect when there isn't one. vsql transactions are always
- * SQL_TRANSACTION_READ_WRITE (AccessMode) and SQL_TRANSACTION_READ_COMMITTED,
- * so SQL_TRANSACTION_READ_ONLY, SQL_TRANSACTION_REPEATABLE_READ and
- * SQL_TRANSACTION_SERIALIZABLE are HYC00.
+ * SQLStartTran starts a transaction for a connection (SQL_HANDLE_DBC), which
+ * becomes the current connection (see SQLConnect). For an environment
+ * (SQL_HANDLE_ENV), the transaction is started in the first of its connections
+ * that executes a statement (it's 25001 if one of them already has a
+ * transaction). A transaction is also started by SQLExecDirect when there
+ * isn't one. SQL_TRANSACTION_READ_UNCOMMITTED must be SQL_TRANSACTION_READ_ONLY,
+ * otherwise it's 42601. The DIAGNOSTICS SIZE of the transaction is the one
+ * that a SET TRANSACTION before it set, if there was one.
  *
  *   SQLStartTran(SQL_HANDLE_DBC, dbc, SQL_TRANSACTION_READ_WRITE,
  *                SQL_TRANSACTION_READ_COMMITTED);
@@ -1725,8 +1850,9 @@ SQLRETURN SQLStartTran(
 /*
  * SQLTablePrivileges would return a result set that describes the privileges
  * of tables.
- * vsql doesn't have privileges, so it always returns SQL_ERROR with SQLSTATE
- * HYC00 (optional feature not implemented).
+ * vsql doesn't have privileges, so it always returns SQL_ERROR. The arguments
+ * are checked like those of SQLTables (SQLSTATE 24000, HY009 or HY090), then
+ * it's SQLSTATE HYC00 (optional feature not implemented).
  */
 SQLRETURN SQLTablePrivileges(
     SQLHSTMT     StatementHandle,
@@ -1764,6 +1890,14 @@ SQLRETURN SQLTables(
     SQLCHAR     *TableType,
     SQLSMALLINT  NameLength4
 );
+
+/*
+ * vsql_module_agent isn't part of the SQL/CLI. It's used by the C that "vsql
+ * module" generates, so that the SQL-client modules linked into a program share
+ * the same SQL-agent (Feature F181, "Multiple module support"). It's a pointer
+ * that's NULL until the first module sets it.
+ */
+void **vsql_module_agent(void);
 
 #ifdef __cplusplus
 }

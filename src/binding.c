@@ -17,8 +17,26 @@
 
 #include "libvsql.h"
 
-// See runtime.c.
-void vsql_gc_after_node_init(void);
+// The garbage collector's routines (from gc.h, which is compiled into
+// libvsql.c).
+int GC_thread_is_registered(void);
+int GC_unregister_my_thread(void);
+
+// vsql_gc_after_node_init is called when the addon is loaded. libvsql
+// initializes the garbage collector from a C constructor, when the addon is
+// loaded, which registers the thread that loaded it with the collector for
+// good. So the collector could stop that thread, or scan its stack, while it's
+// running JavaScript. Every other thread is only registered while it's in a
+// libvsql routine, and after this that thread is too.
+//
+// Unlike Go, Node doesn't replace the signal handlers that the collector uses
+// to stop threads on Linux (SIGPWR and SIGXCPU), unless the program listens
+// for them with process.on.
+static void vsql_gc_after_node_init(void) {
+  if (GC_thread_is_registered()) {
+    GC_unregister_my_thread();
+  }
+}
 
 // The largest integer that a number can hold exactly (2^53 - 1).
 #define MAX_SAFE_INTEGER 9007199254740991LL
@@ -394,7 +412,9 @@ static int bind_param(napi_env env, SQLINTEGER stmt, SQLSMALLINT n, napi_value a
     }
     pointer = p->s;
     buffer_length = (SQLINTEGER)length + 1;
-    p->ind = (SQLINTEGER)length;
+    // A length of 0 isn't a valid length for a character string, so an empty
+    // string is given as a null-terminated string instead.
+    p->ind = length == 0 ? SQL_NTS : (SQLINTEGER)length;
   }
 
   return check(env,

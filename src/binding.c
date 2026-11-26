@@ -7,8 +7,8 @@
 // The functions are synchronous: libvsql runs on the thread that called it.
 //
 // When a routine fails, the error is made by the function given to
-// setErrorFactory, from the SQLSTATE and message of the first diagnostic
-// record.
+// setErrorFactory, from the SQLSTATE, message and other fields (see
+// diag_fields) of the first diagnostic record.
 
 #include <stdlib.h>
 #include <string.h>
@@ -55,8 +55,10 @@ typedef struct {
     }                                                                          \
   } while (0)
 
-// throw_error throws the error for an SQLSTATE and message.
-static void throw_error(napi_env env, const char *sqlstate, const char *message, size_t length) {
+// throw_error throws the error for an SQLSTATE and message, with an object of
+// the other diagnostic fields (or NULL).
+static void throw_error_fields(napi_env env, const char *sqlstate, const char *message,
+                               size_t length, napi_value fields) {
   instance *inst = NULL;
   napi_value factory = NULL;
   napi_get_instance_data(env, (void **)&inst);
@@ -66,14 +68,78 @@ static void throw_error(napi_env env, const char *sqlstate, const char *message,
     return;
   }
 
-  napi_value args[2], global, err;
+  napi_value args[3], global, err;
+  if (fields == NULL && napi_get_undefined(env, &fields) != napi_ok) {
+    return;
+  }
+  args[2] = fields;
   if (napi_create_string_utf8(env, sqlstate, NAPI_AUTO_LENGTH, &args[0]) != napi_ok ||
       napi_create_string_utf8(env, message, length, &args[1]) != napi_ok ||
       napi_get_global(env, &global) != napi_ok ||
-      napi_call_function(env, global, factory, 2, args, &err) != napi_ok) {
+      napi_call_function(env, global, factory, 3, args, &err) != napi_ok) {
     return;
   }
   napi_throw(env, err);
+}
+
+static void throw_error(napi_env env, const char *sqlstate, const char *message, size_t length) {
+  throw_error_fields(env, sqlstate, message, length, NULL);
+}
+
+// The string fields of a diagnostic record that are given to the error
+// factory, when they aren't empty.
+static const struct {
+  const char *name;
+  SQLSMALLINT field;
+} diag_fields[] = {
+    {"constraintCatalog", SQL_DIAG_CONSTRAINT_CATALOG},
+    {"constraintSchema", SQL_DIAG_CONSTRAINT_SCHEMA},
+    {"constraintName", SQL_DIAG_CONSTRAINT_NAME},
+    {"catalogName", SQL_DIAG_CATALOG_NAME},
+    {"schemaName", SQL_DIAG_SCHEMA_NAME},
+    {"tableName", SQL_DIAG_TABLE_NAME},
+    {"columnName", SQL_DIAG_COLUMN_NAME},
+    {"cursorName", SQL_DIAG_CURSOR_NAME},
+    {NULL, 0},
+};
+
+// get_diag_fields is an object of the diagnostic fields of the first record
+// (see diag_fields), and "more" (SQL_DIAG_MORE) if a condition was dropped.
+// It's NULL if the fields can't be read.
+static napi_value get_diag_fields(napi_env env, SQLSMALLINT handle_type, SQLINTEGER handle) {
+  napi_value result, value;
+  if (napi_create_object(env, &result) != napi_ok) {
+    return NULL;
+  }
+
+  // An identifier is at most 128 characters, of up to 4 octets each.
+  SQLCHAR buf[4 * 128 + 1];
+  for (int i = 0; diag_fields[i].name != NULL; i++) {
+    SQLSMALLINT length = 0;
+    SQLRETURN rc = SQLGetDiagField(handle_type, handle, 1, diag_fields[i].field, buf,
+                                   sizeof(buf), &length);
+    if ((rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) || length <= 0) {
+      continue;
+    }
+    if (length >= (SQLSMALLINT)sizeof(buf)) {
+      length = sizeof(buf) - 1;
+    }
+    if (napi_create_string_utf8(env, (const char *)buf, length, &value) != napi_ok ||
+        napi_set_named_property(env, result, diag_fields[i].name, value) != napi_ok) {
+      return NULL;
+    }
+  }
+
+  SQLINTEGER more = 0;
+  SQLRETURN rc = SQLGetDiagField(handle_type, handle, 0, SQL_DIAG_MORE, &more, 0, NULL);
+  if ((rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) && more) {
+    if (napi_get_boolean(env, true, &value) != napi_ok ||
+        napi_set_named_property(env, result, "more", value) != napi_ok) {
+      return NULL;
+    }
+  }
+
+  return result;
 }
 
 // check returns 0 for a return code that isn't an error (SQL_NO_DATA isn't),
@@ -114,7 +180,8 @@ static int check(napi_env env, SQLRETURN rc, SQLSMALLINT handle_type, SQLINTEGER
       continue;
     }
 
-    throw_error(env, (const char *)sqlstate, (const char *)message, length);
+    napi_value fields = get_diag_fields(env, handle_type, handle);
+    throw_error_fields(env, (const char *)sqlstate, (const char *)message, length, fields);
     free(message);
     return -1;
   }
@@ -297,6 +364,104 @@ static napi_value end_tran(napi_env env, napi_callback_info info) {
   return undefined(env);
 }
 
+// endSavepoint(dbc, name, release) rolls back to (or releases) a savepoint
+// that was made with SAVEPOINT.
+static napi_value end_savepoint(napi_env env, napi_callback_info info) {
+  ARGS(3);
+  int32_t dbc;
+  bool release;
+  NAPI_CALL(napi_get_value_int32(env, argv[0], &dbc));
+  NAPI_CALL(napi_get_value_bool(env, argv[2], &release));
+  size_t length;
+  char *name = get_string(env, argv[1], &length);
+  if (name == NULL) {
+    return NULL;
+  }
+
+  SQLRETURN rc = SQLSetConnectAttr(dbc, SQL_ATTR_SAVEPOINT_NAME, name, (SQLINTEGER)length);
+  if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+    rc = SQLEndTran(SQL_HANDLE_DBC, dbc,
+                    release ? SQL_SAVEPOINT_NAME_RELEASE : SQL_SAVEPOINT_NAME_ROLLBACK);
+  }
+  free(name);
+  CHECK(SQL_HANDLE_DBC, dbc, rc);
+  return undefined(env);
+}
+
+// getInfo(dbc, infoType, kind) -> value reads SQLGetInfo, as a string (kind
+// "s") or an SQLSMALLINT ("h") or SQLINTEGER ("i").
+static napi_value get_info(napi_env env, napi_callback_info info) {
+  ARGS(3);
+  int32_t dbc, info_type;
+  NAPI_CALL(napi_get_value_int32(env, argv[0], &dbc));
+  NAPI_CALL(napi_get_value_int32(env, argv[1], &info_type));
+  char kind[2];
+  size_t n;
+  NAPI_CALL(napi_get_value_string_latin1(env, argv[2], kind, sizeof(kind), &n));
+
+  napi_value result;
+  if (kind[0] == 'h') {
+    SQLSMALLINT v = 0;
+    CHECK(SQL_HANDLE_DBC, dbc, SQLGetInfo(dbc, (SQLSMALLINT)info_type, &v, 0, NULL));
+    return number(env, v);
+  }
+  if (kind[0] == 'i') {
+    SQLINTEGER v = 0;
+    CHECK(SQL_HANDLE_DBC, dbc, SQLGetInfo(dbc, (SQLSMALLINT)info_type, &v, 0, NULL));
+    return number(env, v);
+  }
+
+  SQLCHAR buf[1024];
+  SQLSMALLINT length = 0;
+  CHECK(SQL_HANDLE_DBC, dbc,
+        SQLGetInfo(dbc, (SQLSMALLINT)info_type, buf, sizeof(buf), &length));
+  if (length >= (SQLSMALLINT)sizeof(buf)) {
+    length = sizeof(buf) - 1;
+  }
+  NAPI_CALL(napi_create_string_utf8(env, (const char *)buf, length, &result));
+  return result;
+}
+
+// descField(stmt, descriptor, record, field, kind) -> number reads a numeric
+// field of the IRD or IPD (the descriptor is SQL_ATTR_IMP_ROW_DESC or
+// SQL_ATTR_IMP_PARAM_DESC) as an SQLSMALLINT (kind "h") or SQLINTEGER ("i"). It
+// returns null if there's no such record, or the field isn't set (HY091).
+static napi_value desc_field(napi_env env, napi_callback_info info) {
+  ARGS(5);
+  int32_t stmt, attr, record, field;
+  NAPI_CALL(napi_get_value_int32(env, argv[0], &stmt));
+  NAPI_CALL(napi_get_value_int32(env, argv[1], &attr));
+  NAPI_CALL(napi_get_value_int32(env, argv[2], &record));
+  NAPI_CALL(napi_get_value_int32(env, argv[3], &field));
+  char kind[2];
+  size_t n;
+  NAPI_CALL(napi_get_value_string_latin1(env, argv[4], kind, sizeof(kind), &n));
+
+  SQLHDESC desc = 0;
+  CHECK(SQL_HANDLE_STMT, stmt, SQLGetStmtAttr(stmt, attr, &desc, 0, NULL));
+
+  SQLSMALLINT h = 0;
+  SQLINTEGER i = 0;
+  SQLRETURN rc = kind[0] == 'h'
+                     ? SQLGetDescField(desc, (SQLSMALLINT)record, (SQLSMALLINT)field, &h, 0, NULL)
+                     : SQLGetDescField(desc, (SQLSMALLINT)record, (SQLSMALLINT)field, &i, 0, NULL);
+  napi_value result;
+  if (rc == SQL_NO_DATA) {
+    NAPI_CALL(napi_get_null(env, &result));
+    return result;
+  }
+  if (rc == SQL_ERROR) {
+    SQLCHAR sqlstate[6] = {0};
+    if (SQLGetDiagRec(SQL_HANDLE_DESC, desc, 1, sqlstate, NULL, NULL, 0, NULL) == SQL_SUCCESS &&
+        strcmp((const char *)sqlstate, "HY091") == 0) {
+      NAPI_CALL(napi_get_null(env, &result));
+      return result;
+    }
+  }
+  CHECK(SQL_HANDLE_DESC, desc, rc);
+  return number(env, kind[0] == 'h' ? h : i);
+}
+
 // execDirect(stmt, query)
 static napi_value exec_direct(napi_env env, napi_callback_info info) {
   ARGS(2);
@@ -354,8 +519,9 @@ static SQLINTEGER characters(const char *s, size_t length) {
 
 // bind_param binds one parameter, an array of [valueType, parameterType,
 // columnSize, decimalDigits, value], where the value is null, a number or
-// bigint (SQL_BIGINT), a number (SQL_DOUBLE) or a string (SQL_CHAR). A
-// columnSize of 0 for a string is its number of characters (at least 1).
+// bigint (SQL_BIGINT), a number (SQL_DOUBLE), a string (SQL_CHAR) or a
+// Uint8Array (SQL_BINARY). A columnSize of 0 for a string is its number of
+// characters (at least 1), and for a Uint8Array its number of octets.
 static int bind_param(napi_env env, SQLINTEGER stmt, SQLSMALLINT n, napi_value array, param *p) {
   napi_value fields[5];
   for (uint32_t i = 0; i < 5; i++) {
@@ -398,6 +564,23 @@ static int bind_param(napi_env env, SQLINTEGER stmt, SQLSMALLINT n, napi_value a
     }
     pointer = &p->d;
     buffer_length = sizeof(SQLDOUBLE);
+  } else if (value_type == SQL_BINARY) {
+    // The octets are only read while SQLExecute runs, when no JavaScript can
+    // run, so they don't need to be copied.
+    napi_typedarray_type array_type;
+    size_t length;
+    void *data;
+    if (napi_get_typedarray_info(env, fields[4], &array_type, &length, &data, NULL, NULL) !=
+        napi_ok) {
+      return -1;
+    }
+    if (column_size == 0) {
+      column_size = length == 0 ? 1 : (int32_t)length;
+    }
+    // libvsql needs a pointer even for no octets.
+    pointer = length == 0 ? (SQLPOINTER)"" : data;
+    buffer_length = (SQLINTEGER)length;
+    p->ind = (SQLINTEGER)length;
   } else {
     size_t length;
     p->s = get_string(env, fields[4], &length);
@@ -593,6 +776,53 @@ static napi_value get_chars(napi_env env, SQLINTEGER stmt, SQLSMALLINT n) {
   }
 }
 
+// get_octets reads a column as SQL_BINARY into a Buffer, or null. Like
+// get_chars, a value that doesn't fit is read in pieces.
+static napi_value get_octets(napi_env env, SQLINTEGER stmt, SQLSMALLINT n) {
+  char small[256];
+  char *buf = small, *large = NULL;
+  SQLINTEGER size = sizeof(small), ind = 0;
+  size_t length = 0;
+  for (;;) {
+    SQLRETURN rc =
+        SQLGetData(stmt, n, SQL_BINARY, buf + length, size - (SQLINTEGER)length, &ind);
+    if (check(env, rc, SQL_HANDLE_STMT, stmt) < 0) {
+      free(large);
+      return NULL;
+    }
+    if (ind == SQL_NULL_DATA) {
+      free(large);
+      napi_value result;
+      NAPI_CALL(napi_get_null(env, &result));
+      return result;
+    }
+
+    // The rest of the value (ind) didn't fit, so the buffer is full.
+    SQLINTEGER room = size - (SQLINTEGER)length;
+    if (rc == SQL_SUCCESS_WITH_INFO && ind > room) {
+      size_t new_size = length + (size_t)ind;
+      char *grown = malloc(new_size);
+      if (grown == NULL) {
+        free(large);
+        napi_throw_error(env, NULL, "out of memory");
+        return NULL;
+      }
+      memcpy(grown, buf, length + room);
+      free(large);
+      buf = large = grown;
+      length += room;
+      size = (SQLINTEGER)new_size;
+      continue;
+    }
+
+    napi_value result;
+    napi_status status = napi_create_buffer_copy(env, length + ind, buf, NULL, &result);
+    free(large);
+    NAPI_CALL(status);
+    return result;
+  }
+}
+
 // get_value reads a column of the current row (see fetch for the kinds).
 static napi_value get_value(napi_env env, SQLINTEGER stmt, SQLSMALLINT column, char kind) {
   SQLINTEGER ind = 0;
@@ -644,6 +874,8 @@ static napi_value get_value(napi_env env, SQLINTEGER stmt, SQLSMALLINT column, c
     NAPI_CALL(napi_get_boolean(env, v[0] == 'T', &result));
     return result;
   }
+  case 'x':
+    return get_octets(env, stmt, column);
   default:
     return get_chars(env, stmt, column);
   }
@@ -663,6 +895,7 @@ static napi_value get_value(napi_env env, SQLINTEGER stmt, SQLSMALLINT column, c
 //   r  SQL_REAL as a number
 //   o  SQL_CHAR as a boolean
 //   s  SQL_CHAR as a string
+//   x  SQL_BINARY as a Buffer
 //
 // A NULL is null.
 static napi_value fetch(napi_env env, napi_callback_info info) {
@@ -735,6 +968,55 @@ static const struct {
     {"SQL_TYPE_TIMESTAMP", SQL_TYPE_TIMESTAMP},
     {"SQL_TYPE_TIME_WITH_TIMEZONE", SQL_TYPE_TIME_WITH_TIMEZONE},
     {"SQL_TYPE_TIMESTAMP_WITH_TIMEZONE", SQL_TYPE_TIMESTAMP_WITH_TIMEZONE},
+    {"SQL_DECFLOAT", SQL_DECFLOAT},
+    {"SQL_BINARY", SQL_BINARY},
+    {"SQL_VARBINARY", SQL_VARBINARY},
+    {"SQL_BLOB", SQL_BLOB},
+    {"SQL_CLOB", SQL_CLOB},
+    {"SQL_INTERVAL_YEAR", SQL_INTERVAL_YEAR},
+    {"SQL_INTERVAL_MONTH", SQL_INTERVAL_MONTH},
+    {"SQL_INTERVAL_DAY", SQL_INTERVAL_DAY},
+    {"SQL_INTERVAL_HOUR", SQL_INTERVAL_HOUR},
+    {"SQL_INTERVAL_MINUTE", SQL_INTERVAL_MINUTE},
+    {"SQL_INTERVAL_SECOND", SQL_INTERVAL_SECOND},
+    {"SQL_INTERVAL_YEAR_TO_MONTH", SQL_INTERVAL_YEAR_TO_MONTH},
+    {"SQL_INTERVAL_DAY_TO_HOUR", SQL_INTERVAL_DAY_TO_HOUR},
+    {"SQL_INTERVAL_DAY_TO_MINUTE", SQL_INTERVAL_DAY_TO_MINUTE},
+    {"SQL_INTERVAL_DAY_TO_SECOND", SQL_INTERVAL_DAY_TO_SECOND},
+    {"SQL_INTERVAL_HOUR_TO_MINUTE", SQL_INTERVAL_HOUR_TO_MINUTE},
+    {"SQL_INTERVAL_HOUR_TO_SECOND", SQL_INTERVAL_HOUR_TO_SECOND},
+    {"SQL_INTERVAL_MINUTE_TO_SECOND", SQL_INTERVAL_MINUTE_TO_SECOND},
+    {"SQL_TRANSACTION_READ_ONLY", SQL_TRANSACTION_READ_ONLY},
+    {"SQL_TRANSACTION_READ_UNCOMMITTED", SQL_TRANSACTION_READ_UNCOMMITTED},
+    {"SQL_TRANSACTION_REPEATABLE_READ", SQL_TRANSACTION_REPEATABLE_READ},
+    {"SQL_TRANSACTION_SERIALIZABLE", SQL_TRANSACTION_SERIALIZABLE},
+    {"SQL_ATTR_IMP_ROW_DESC", SQL_ATTR_IMP_ROW_DESC},
+    {"SQL_ATTR_IMP_PARAM_DESC", SQL_ATTR_IMP_PARAM_DESC},
+    {"SQL_DESC_COUNT", SQL_DESC_COUNT},
+    {"SQL_DESC_KEY_TYPE", SQL_DESC_KEY_TYPE},
+    {"SQL_DESC_KEY_MEMBER", SQL_DESC_KEY_MEMBER},
+    {"SQL_DESC_TYPE", SQL_DESC_TYPE},
+    {"SQL_DESC_DATETIME_INTERVAL_CODE", SQL_DESC_DATETIME_INTERVAL_CODE},
+    {"SQL_DESC_DATETIME_INTERVAL_PRECISION", SQL_DESC_DATETIME_INTERVAL_PRECISION},
+    {"SQL_DESC_LENGTH", SQL_DESC_LENGTH},
+    {"SQL_DESC_OCTET_LENGTH", SQL_DESC_OCTET_LENGTH},
+    {"SQL_DESC_PRECISION", SQL_DESC_PRECISION},
+    {"SQL_DESC_SCALE", SQL_DESC_SCALE},
+    {"SQL_DESC_NULLABLE", SQL_DESC_NULLABLE},
+    {"SQL_DATETIME", SQL_DATETIME},
+    {"SQL_INTERVAL", SQL_INTERVAL},
+    {"SQL_DBMS_NAME", SQL_DBMS_NAME},
+    {"SQL_DBMS_VERSION", SQL_DBMS_VERSION},
+    {"SQL_VSQL_BUILD_VERSION", SQL_VSQL_BUILD_VERSION},
+    {"SQL_VSQL_BUILD_COMMIT", SQL_VSQL_BUILD_COMMIT},
+    {"SQL_VSQL_BUILD_DATE", SQL_VSQL_BUILD_DATE},
+    {"SQL_VSQL_BUILD_V_VERSION", SQL_VSQL_BUILD_V_VERSION},
+    {"SQL_VSQL_BUILD_V_COMMIT", SQL_VSQL_BUILD_V_COMMIT},
+    {"SQL_VSQL_BUILD_C_COMPILER", SQL_VSQL_BUILD_C_COMPILER},
+    {"SQL_VSQL_OPERATING_SYSTEM", SQL_VSQL_OPERATING_SYSTEM},
+    {"SQL_VSQL_MACHINE", SQL_VSQL_MACHINE},
+    {"SQL_VSQL_FILE_READ_VERSION", SQL_VSQL_FILE_READ_VERSION},
+    {"SQL_VSQL_FILE_WRITE_VERSION", SQL_VSQL_FILE_WRITE_VERSION},
     {"SQL_NO_NULLS", SQL_NO_NULLS},
     {"SQL_NULLABLE", SQL_NULLABLE},
     {"SQL_TRANSACTION_READ_WRITE", SQL_TRANSACTION_READ_WRITE},
@@ -771,6 +1053,9 @@ NAPI_MODULE_INIT() {
       {"setAutocommit", NULL, set_autocommit, NULL, NULL, NULL, napi_default, NULL},
       {"startTran", NULL, start_tran, NULL, NULL, NULL, napi_default, NULL},
       {"endTran", NULL, end_tran, NULL, NULL, NULL, napi_default, NULL},
+      {"endSavepoint", NULL, end_savepoint, NULL, NULL, NULL, napi_default, NULL},
+      {"getInfo", NULL, get_info, NULL, NULL, NULL, napi_default, NULL},
+      {"descField", NULL, desc_field, NULL, NULL, NULL, napi_default, NULL},
       {"execDirect", NULL, exec_direct, NULL, NULL, NULL, napi_default, NULL},
       {"prepare", NULL, prepare, NULL, NULL, NULL, napi_default, NULL},
       {"execute", NULL, execute, NULL, NULL, NULL, napi_default, NULL},

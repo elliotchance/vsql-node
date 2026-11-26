@@ -1,6 +1,8 @@
 // The types of vsql-node (lib/index.js). See the README for how each SQL type
 // is converted.
 
+/// <reference types="node" />
+
 /** A value that can be a parameter. */
 export type Parameter =
   | null
@@ -10,10 +12,17 @@ export type Parameter =
   | bigint
   | string
   | Date
-  | SqlValue;
+  | SqlValue
+  /** A binary string: the octets of any view (such as a Buffer) or buffer. */
+  | ArrayBufferView
+  | ArrayBuffer
+  | SharedArrayBuffer;
 
-/** A column's value. A BIGINT is a bigint with { bigint: true }. */
-export type Value = null | boolean | number | bigint | string;
+/**
+ * A column's value. A BIGINT is a bigint with { bigint: true }, and a binary
+ * string is a Buffer.
+ */
+export type Value = null | boolean | number | bigint | string | Buffer;
 
 /** A row, keyed by the column names (or an array, see Statement.raw). */
 export type Row = Record<string, Value>;
@@ -23,17 +32,85 @@ export interface ConnectOptions {
   bigint?: boolean;
 }
 
-export interface Column {
-  name: string;
-  /** The SQL type, such as "INTEGER" or "CHARACTER VARYING". */
+/** The type of a column or parameter. */
+export interface TypeInfo {
+  /** The SQL type, such as "INTEGER" or "INTERVAL YEAR TO MONTH". */
   type: string;
   nullable: boolean;
-  /** The maximum length of a CHARACTER or CHARACTER VARYING. */
+  /**
+   * The maximum length of a CHARACTER or CHARACTER VARYING (in characters), or
+   * a BINARY or BINARY VARYING (in octets).
+   */
   length: number | null;
-  /** The precision of a DECIMAL or NUMERIC. */
+  /**
+   * The precision of a DECIMAL, NUMERIC or DECFLOAT, or the leading field
+   * precision of an interval.
+   */
   precision: number | null;
-  /** The scale of a DECIMAL or NUMERIC. */
+  /**
+   * The scale of a DECIMAL or NUMERIC, or the fractional seconds precision of
+   * an interval that ends with SECOND.
+   */
   scale: number | null;
+}
+
+export interface Column extends TypeInfo {
+  name: string;
+  /**
+   * The key of the rows that the column is part of, if vsql knows it: its
+   * PRIMARY KEY, or a PREFERRED key (such as a UNIQUE NOT NULL column).
+   */
+  key: 'PRIMARY' | 'PREFERRED' | null;
+}
+
+/** A dynamic parameter, see Statement.parameters. */
+export interface ParameterInfo extends Omit<TypeInfo, 'type'> {
+  /** null if vsql doesn't know it until the statement is executed. */
+  type: string | null;
+}
+
+export type IsolationLevel =
+  | 'READ UNCOMMITTED'
+  | 'READ COMMITTED'
+  | 'REPEATABLE READ'
+  | 'SERIALIZABLE';
+
+export interface TransactionOptions {
+  /** A READ ONLY transaction (it's READ WRITE by default). */
+  readOnly?: boolean;
+  /**
+   * "READ COMMITTED" by default. vsql runs REPEATABLE READ as SERIALIZABLE,
+   * and READ UNCOMMITTED (which must be readOnly) as READ COMMITTED.
+   */
+  isolationLevel?: IsolationLevel;
+}
+
+/** The version of vsql and how it was built, see Connection.info. */
+export interface Info {
+  /** "vsql". */
+  dbmsName: string;
+  /** Such as "01.07.0058". */
+  dbmsVersion: string;
+  /** Such as "v1.7.58", or "" if it isn't a release. */
+  buildVersion: string;
+  /** The git commit, or "" if it isn't a release. */
+  buildCommit: string;
+  /** Such as "2026-11-26" (UTC). */
+  buildDate: string;
+  /** The version of V that built it, such as "0.5.2". */
+  buildVVersion: string;
+  /** The commit of V that built it. */
+  buildVCommit: string;
+  /** Such as "clang". */
+  buildCCompiler: string;
+  /** Such as "macos". */
+  operatingSystem: string;
+  /** Such as "arm64". */
+  machine: string;
+  /** The file format version needed to read the database (0 for :memory:). */
+  fileReadVersion: number;
+  /** The file format version needed to write the database (0 for :memory:). */
+  fileWriteVersion: number;
 }
 
 export interface RunResult {
@@ -66,16 +143,23 @@ export class Connection {
   iterate<R = Row>(sql: string, params?: Parameter[]): IterableIterator<R>;
 
   /** Starts a transaction, which is ended by commit or rollback. */
-  begin(): void;
+  begin(options?: TransactionOptions): void;
   /** Commits the transaction, if there is one. */
   commit(): void;
-  /** Rolls back the transaction, if there is one. */
-  rollback(): void;
+  /**
+   * Rolls back the transaction, if there is one. With the name of a savepoint
+   * (an identifier, like in SQL), it only rolls back to that savepoint.
+   */
+  rollback(savepoint?: string): void;
   /**
    * Calls fn in a transaction, which is committed when it returns (and its
-   * value is returned), or rolled back if it throws.
+   * value is returned), or rolled back if it throws. In another transaction,
+   * it's a savepoint instead (and it can't have options).
    */
-  transaction<T>(fn: () => T): T;
+  transaction<T>(fn: () => T, options?: TransactionOptions): T;
+
+  /** The version of vsql and how it was built. */
+  info(): Info;
 
   /** Closes the connection and its statements, rolling back a transaction. */
   close(): void;
@@ -91,6 +175,8 @@ export class Statement<R = Row> {
   readonly reader: boolean;
 
   columns(): Column[];
+  /** Describes each parameter ("?"), from where it's used. */
+  parameters(): ParameterInfo[];
   /** Makes each row an array, in the order of the columns. */
   raw(on?: true): Statement<Value[]>;
   raw(on: false): Statement<Row>;
@@ -112,6 +198,20 @@ export class VsqlError extends Error {
   readonly sqlstate: string;
   /** The same as sqlstate. */
   readonly code: string;
+  /** The constraint that was violated. */
+  readonly constraintCatalog?: string;
+  readonly constraintSchema?: string;
+  readonly constraintName?: string;
+  /** The table (or the table of the constraint). */
+  readonly catalogName?: string;
+  readonly schemaName?: string;
+  readonly tableName?: string;
+  /** The column, such as for an unknown column. */
+  readonly columnName?: string;
+  /** The cursor. */
+  readonly cursorName?: string;
+  /** Whether vsql raised more conditions than it kept. */
+  readonly more: boolean;
 }
 
 /** A parameter that's sent as a particular SQL type. */

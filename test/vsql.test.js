@@ -315,14 +315,8 @@ describe('with a connection to a new in-memory database', () => {
     assert.throws(() => db.get('DELETE FROM foo WHERE x > 100'), /use run/);
     assert.equal(scalar(db, 'SELECT COUNT(*) FROM foo'), 10);
 
-    // A query from a table that doesn't exist yet only has columns once it's
-    // executed.
-    const later = db.prepare('SELECT * FROM bar');
-    db.run('CREATE TABLE bar (y INTEGER)');
-    db.run('INSERT INTO bar (y) VALUES (1)');
-    assert.deepEqual(later.all(), [{ Y: 1 }]);
-    assert.equal(later.reader, true);
-    later.close();
+    // A query from a table that doesn't exist can't be prepared.
+    assert.throws(() => db.prepare('SELECT * FROM bar'), { sqlstate: '42P01' });
   });
 
   test('columns with the same name', () => {
@@ -482,7 +476,7 @@ test('memory databases are separate', () => {
 test('statements and connections that are not closed are freed', async () => {
   const db = vsql.connect(':memory:');
   for (let i = 0; i < 1000; i++) {
-    db.prepare('VALUES ?').get([i]);
+    db.prepare('VALUES CAST(? AS INTEGER)').get([i]);
   }
   for (let i = 0; i < 100; i++) {
     vsql.connect(':memory:').get('VALUES 1');

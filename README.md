@@ -195,7 +195,8 @@ npm run build && npm test
 ```
 
 Or give a version (`scripts/update-amalgamation.sh v1.2.3`), or a zip that has
-already been downloaded.
+already been downloaded. It needs an amalgamation from vsql v1.7.58 or later,
+which has all of libvsql's C in one `libvsql.c`.
 
 ### Releasing
 

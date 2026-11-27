@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux is built on Debian 11, so the prebuilds work with glibc 2.29 or
+          # Linux is built on Debian 11, so the prebuilds work with glibc 2.31 or
           # later. With musl (such as Alpine), the addon is compiled when it's
           # installed.
           - { os: Linux, arch: x86-64, runner: ubuntu-latest, container: "node:22-bullseye" }

@@ -34,6 +34,17 @@ when it's finished (like `node:sqlite` and better-sqlite3). To run queries at
 the same time, use a connection in each
 [worker thread](https://nodejs.org/api/worker_threads.html).
 
+This includes waiting for a lock: a `SERIALIZABLE` statement or transaction
+(see [Transactions](#transactions)) waits up to 5 seconds for the other
+connections to the file to finish their transactions, and the event loop is
+blocked while it waits. If the other connection is on the same thread, it
+can't finish, so the wait always fails with `40001` after 5 seconds (see
+[#10](https://github.com/elliotchance/vsql-node/issues/10)).
+
+Each call is one statement. More than one (`INSERT ...; INSERT ...`) is a
+syntax error (`42601`), although a `;` at the end is allowed. A `--` comment
+is an error (`42000`), so use `/* ... */` instead.
+
 | Connection                      | Statement                 |                                                     |
 |---------------------------------|---------------------------|-----------------------------------------------------|
 | `db.prepare(sql)`               |                           | Prepares a statement                                |
@@ -86,7 +97,9 @@ db.info();
 ```
 
 A statement that hasn't been closed is freed when it's garbage collected, as is
-a connection (which rolls back its transaction). Both can be declared with
+a connection (which rolls back its transaction). A statement with rows that
+haven't all been fetched isn't, since the connection keeps it until its rows
+are closed (see [Transactions](#transactions)). Both can be declared with
 `using` (on Node 24 or later).
 
 ## Transactions
@@ -104,6 +117,23 @@ db.transaction(() => {
     insert.run([x]);
   }
 });
+```
+
+Until a query's rows have all been fetched (or the statement is closed, or the
+iterator is left with `break` or `return`), its transaction is still going. An
+iterator that's left part way through (such as one that only had `next()`
+called once) keeps the file locked, so the other connections to it wait and
+fail with `40001` after 5 seconds, and `db.begin()` (or `db.transaction(fn)`)
+on the same connection fails with `25001`. Fetch all the rows, or close the
+statement, first (see
+[#5](https://github.com/elliotchance/vsql-node/issues/5)):
+
+```js
+const it = db.iterate('SELECT x FROM foo');
+it.next();
+db.begin(); // VsqlError 25001: active SQL-transaction
+it.return(); // closes the statement
+db.begin();
 ```
 
 A transaction in another one (`db.transaction(fn)` while there's already a
@@ -150,7 +180,8 @@ db.commit(); // commits 1
 
 `db.begin(options)` and `db.transaction(fn, options)` take `readOnly` (`false`
 by default) and `isolationLevel` (`"READ COMMITTED"` by default, or
-`"READ UNCOMMITTED"`, `"REPEATABLE READ"` or `"SERIALIZABLE"`):
+`"READ UNCOMMITTED"`, `"REPEATABLE READ"` or `"SERIALIZABLE"`). The names are
+case sensitive, so `'serializable'` is a `RangeError`:
 
 ```js
 db.transaction(() => report(), { readOnly: true, isolationLevel: 'SERIALIZABLE' });
@@ -158,8 +189,11 @@ db.transaction(() => report(), { readOnly: true, isolationLevel: 'SERIALIZABLE' 
 
 vsql runs `READ UNCOMMITTED` (which must be `readOnly`) as `READ COMMITTED`, and
 `REPEATABLE READ` as `SERIALIZABLE`. A statement outside of a transaction is
-`SERIALIZABLE`. A `SERIALIZABLE` transaction waits for the other connections to
-the file, while a `READ COMMITTED` one fails if it can't commit.
+`SERIALIZABLE` (vsql's default). A `SERIALIZABLE` transaction waits (up to 5
+seconds) for the other connections to the file, while a `READ COMMITTED` one
+doesn't wait, and fails with `40001` if another transaction changed the same
+rows. Since a wait blocks the event loop (see [API](#api)), the default for
+`db.begin()` is `READ COMMITTED` instead of vsql's `SERIALIZABLE`.
 
 ## Parameters
 
@@ -179,6 +213,12 @@ type, which is cast to the type it's used as:
 | `vsql.date(value)`       | `DATE`                                                 |
 | `vsql.time(value)`       | `TIME` (`WITH TIME ZONE` if it has an offset)          |
 | `vsql.timestamp(value)`  | `TIMESTAMP` (`WITH TIME ZONE` if it has an offset)     |
+
+The type of a parameter comes from where it's used, and the value is cast to
+it. So a `number` that isn't an integer is truncated when it's used as an
+integer (`WHERE x = ?` with `1.5` is `x = 1` when `x` is an `INTEGER`), and a
+`?` that has no type from where it's used (such as `SELECT ?`) is a syntax
+error (`42601`). Use `CAST(? AS DOUBLE PRECISION)` to give it a type.
 
 A string is cast to the type of the parameter (from where it's used), so it can
 be a parameter for any type that isn't binary, in vsql's format (such as
@@ -309,7 +349,7 @@ threads, so don't listen for them with `process.on`.
 ## Requirements
 
 Node 22 or later. The addon is prebuilt for macOS (ARM64 and x86-64), Linux
-(ARM64 and x86-64, with glibc 2.29 or later) and Windows (x86-64), so npm
+(ARM64 and x86-64, with glibc 2.31 or later) and Windows (x86-64), so npm
 doesn't need to compile anything. It uses Node-API, so the same prebuild works
 for every version of Node.
 

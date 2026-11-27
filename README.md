@@ -355,16 +355,16 @@ threads, so don't listen for them with `process.on`.
 
 ## Requirements
 
-Node 22 or later. The addon is prebuilt for macOS (ARM64 and x86-64), Linux
-(ARM64 and x86-64, with glibc 2.31 or later) and Windows (x86-64), so npm
+Node 22 or later. The addon is prebuilt for macOS, Linux (with glibc 2.31 or
+later, or musl, such as Alpine) and Windows, each for ARM64 and x86-64, so npm
 doesn't need to compile anything. It uses Node-API, so the same prebuild works
 for every version of Node.
 
-Otherwise (such as with musl, on Alpine), it's compiled when it's installed,
-which needs Python and a C compiler (see
-[node-gyp](https://github.com/nodejs/node-gyp#installation)), and takes about
-30 seconds. On Windows, it needs the "C++ Clang tools for Windows" component of
-Visual Studio, since the C that V generates doesn't compile with MSVC.
+Otherwise, it's compiled when it's installed, which needs Python and a C
+compiler (see [node-gyp](https://github.com/nodejs/node-gyp#installation)), and
+takes about 30 seconds. On Windows, it needs the "C++ Clang tools for Windows"
+component of Visual Studio, since the C that V generates doesn't compile with
+MSVC.
 
 ## Development
 

@@ -96,16 +96,16 @@ db.info();
 //   machine: 'arm64', fileReadVersion: 0, fileWriteVersion: 0 }
 ```
 
-A statement that hasn't been closed is freed when it's garbage collected, as is
-a connection (which rolls back its transaction). A statement with rows that
-haven't all been fetched isn't, since the connection keeps it until its rows
-are closed (see [Transactions](#transactions)). Both can be declared with
+A statement that hasn't been closed is freed when it's garbage collected
+(closing its rows, if an iterator was left part way through), as is a connection
+(which rolls back its transaction). Both can be declared with
 `using` (on Node 24 or later).
 
 ## Transactions
 
 Each statement is committed when it finishes, or when all the rows of a query
-have been fetched (or the iterator is left). `db.begin()` starts a transaction,
+have been fetched (or the iterator is left). `db.iterate()` only executes the
+query when its iterator is first advanced. `db.begin()` starts a transaction,
 which is ended by `db.commit()` or `db.rollback()` (closing the connection rolls
 it back). `db.transaction(fn)` calls `fn` in a transaction, which is committed
 when it returns, or rolled back if it throws:
@@ -159,8 +159,11 @@ in better-sqlite3), since `db.transaction(fn)` ends the transaction (or the
 savepoint) itself.
 
 Ending a transaction closes the rows of its queries, which finishes their
-iterators. `START TRANSACTION`, `COMMIT` and `ROLLBACK` can't be executed as
-statements.
+iterators. A transaction can't be started while the rows of a query are being
+iterated outside of one (they're still in the query's own transaction), so
+`db.begin()` and `db.transaction(fn)` throw a `TypeError` until the iterator is
+finished or left. Use `db.all()` to read the rows first. `START TRANSACTION`,
+`COMMIT` and `ROLLBACK` can't be executed as statements.
 
 In a transaction, `db.savepoint(name)` makes a savepoint, `db.rollback(name)`
 rolls back what came after it (and the transaction carries on), and

@@ -147,9 +147,13 @@ export class Connection {
   run(sql: string, params?: Parameter[]): RunResult;
   get<R = Row>(sql: string, params?: Parameter[]): R | undefined;
   all<R = Row>(sql: string, params?: Parameter[]): R[];
+  /** The query is only executed when the iterator is first advanced. */
   iterate<R = Row>(sql: string, params?: Parameter[]): IterableIterator<R>;
 
-  /** Starts a transaction, which is ended by commit or rollback. */
+  /**
+   * Starts a transaction, which is ended by commit or rollback. It throws a
+   * TypeError while the rows of a query are being iterated.
+   */
   begin(options?: TransactionOptions): void;
   /** Commits the transaction, if there is one. */
   commit(): void;

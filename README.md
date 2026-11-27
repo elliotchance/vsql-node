@@ -186,6 +186,9 @@ be a parameter for any type that isn't binary, in vsql's format (such as
 `INTERVAL YEAR TO MONTH`). A binary string can only be a `Buffer` (or another
 view), and a `Buffer` can only be a binary string.
 
+A string with a lone surrogate (such as `"\uD800"`) is a `RangeError`, because
+it can't be converted to UTF-8 (see `String.prototype.isWellFormed`).
+
 `vsql.numeric` (from a string such as `"-12.50"`, a number or a bigint),
 `vsql.date` (`"YYYY-MM-DD"`), `vsql.time` (`"HH:MM:SS"`) and `vsql.timestamp`
 (`"YYYY-MM-DD HH:MM:SS"`) send a value as that type instead, and take the

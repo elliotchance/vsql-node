@@ -227,7 +227,10 @@ export class VsqlError extends Error {
   readonly more: boolean;
 }
 
-/** A parameter that's sent as a particular SQL type. */
+/**
+ * A parameter that's sent as a particular SQL type, made by numeric, date, time
+ * or timestamp (the constructor throws a TypeError).
+ */
 export class SqlValue {
   private constructor();
 

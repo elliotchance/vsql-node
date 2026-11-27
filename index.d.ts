@@ -154,7 +154,8 @@ export class Connection {
   /**
    * Calls fn in a transaction, which is committed when it returns (and its
    * value is returned), or rolled back if it throws. In another transaction,
-   * it's a savepoint instead (and it can't have options).
+   * it's a savepoint instead (and it can't have options). fn can't call commit
+   * or rollback (without a savepoint), which throw a TypeError.
    */
   transaction<T>(fn: () => T, options?: TransactionOptions): T;
 

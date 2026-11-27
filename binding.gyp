@@ -13,7 +13,11 @@
         'internal/amalgamation/libvsql.c',
       ],
       'include_dirs': ['internal/amalgamation'],
-      'defines': ['NAPI_VERSION=8'],
+      # The garbage collector in libvsql doesn't install pthread_atfork
+      # handlers. Node only forks to execute another program, and the handler
+      # for the child crashes (on Linux), since the thread that loaded the
+      # addon isn't registered with the collector (see binding.c).
+      'defines': ['NAPI_VERSION=8', 'NO_HANDLE_FORK'],
       'conditions': [
         ['OS=="win"', {
           # The C that V generates uses GNU C (such as statement expressions),

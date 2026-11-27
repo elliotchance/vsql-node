@@ -288,5 +288,5 @@ which has all of libvsql's C in one `libvsql.c`.
 ### Releasing
 
 Publishing a GitHub release (with a tag such as `v1.2.3`) publishes the
-package to npm, with the prebuilds from
-[release.yml](.github/workflows/release.yml).
+package to npm ([release.yml](.github/workflows/release.yml)), with the
+prebuilds from [test.yml](.github/workflows/test.yml).

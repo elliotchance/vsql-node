@@ -266,8 +266,36 @@ try {
 }
 ```
 
+`diagnostics` are the other conditions that vsql raised with the error, each an
+object of `sqlstate`, `message` and the same fields (it's usually empty):
+
+```js
+try {
+  db.all('SELECT SUM(x) / 0 FROM t');
+} catch (e) {
+  console.log(e.sqlstate, e.diagnostics); // 22012 [{ sqlstate: '01003', message: 'null value eliminated in set function' }]
+}
+```
+
 An error from the driver itself (such as using a closed connection, or a value
 that can't be a parameter) is a `TypeError` or `RangeError`.
+
+### Warnings
+
+A statement that succeeds with a warning from vsql (such as `01003` when a
+`NULL` is eliminated from `SUM`, or `01004` when a string is truncated) gives a
+`vsql.VsqlWarning` to `process.emitWarning`, which is how Node reports problems
+that shouldn't stop the program. It has the same fields as a `VsqlError`. Node
+prints warnings to stderr, unless they're handled with `process.on('warning')`
+or Node is run with `--no-warnings` (or `--disable-warning=VsqlWarning`):
+
+```js
+process.on('warning', (w) => {
+  if (w instanceof vsql.VsqlWarning) {
+    console.log(w.sqlstate, w.message); // 01003 null value eliminated in set function (SQLSTATE 01003)
+  }
+});
+```
 
 ## Threads
 

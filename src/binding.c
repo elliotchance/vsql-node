@@ -749,10 +749,11 @@ static napi_value get_chars(napi_env env, SQLINTEGER stmt, SQLSMALLINT n) {
       return result;
     }
 
-    // The rest of the string (ind) didn't fit, so the buffer has a null
-    // terminated piece of it.
+    // The rest of the string (ind) didn't fit, so the buffer is full: a piece
+    // of it and the null terminator. The size of the piece comes from the size
+    // of the buffer, not strlen, because the string can contain U+0000.
     if (rc == SQL_SUCCESS_WITH_INFO && ind >= size - (SQLINTEGER)length) {
-      size_t piece = strlen(buf + length);
+      size_t piece = (size_t)size - length - 1;
       size_t new_size = length + piece + (size_t)ind + 1;
       char *grown = malloc(new_size);
       if (grown == NULL) {

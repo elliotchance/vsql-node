@@ -80,8 +80,10 @@ export interface TransactionOptions {
   /** A READ ONLY transaction (it's READ WRITE by default). */
   readOnly?: boolean;
   /**
-   * "READ COMMITTED" by default. vsql runs REPEATABLE READ as SERIALIZABLE,
-   * and READ UNCOMMITTED (which must be readOnly) as READ COMMITTED.
+   * "READ COMMITTED" by default (vsql's default is SERIALIZABLE, which waits
+   * for other connections and blocks the event loop while it does). vsql runs
+   * REPEATABLE READ as SERIALIZABLE, and READ UNCOMMITTED (which must be
+   * readOnly) as READ COMMITTED.
    */
   isolationLevel?: IsolationLevel;
 }

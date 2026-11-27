@@ -1,13 +1,51 @@
 name: Test
 
+# libvsql is compiled once for each OS and architecture (by prebuildify), and
+# the prebuild is tested with each version of Node, rather than compiling it
+# again for each one. The addon uses Node-API, so the same prebuild works for
+# every version. release.yml calls this to build the prebuilds that it
+# publishes.
+
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 jobs:
+  prebuild:
+    name: Prebuild for ${{ matrix.os }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is built on Debian 11, so the prebuilds work with glibc 2.29 or
+          # later. With musl (such as Alpine), the addon is compiled when it's
+          # installed.
+          - { os: Linux, arch: x86-64, runner: ubuntu-latest, container: "node:22-bullseye" }
+          - { os: Linux, arch: ARM64, runner: ubuntu-24.04-arm, container: "node:22-bullseye" }
+          - { os: macOS, arch: x86-64, runner: macos-15-intel }
+          - { os: macOS, arch: ARM64, runner: macos-latest }
+          - { os: Windows, arch: x86-64, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        if: ${{ !matrix.container }}
+        with:
+          node-version: 22
+      # prebuildify compiles the addon, so npm install doesn't need to.
+      - run: npm ci --ignore-scripts
+      - run: npm run prebuildify
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prebuilds-${{ matrix.os }}-${{ matrix.arch }}
+          path: prebuilds
+
   test:
     name: ${{ matrix.os }} (${{ matrix.arch }}), Node ${{ matrix.node }}
+    needs: [prebuild]
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +67,12 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
-      # Compiles the addon, since there are no prebuilds.
-      - run: npm install
+      # Doesn't compile the addon. node-gyp-build loads the prebuild instead,
+      # since there's no build/Release.
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v8
+        with:
+          name: prebuilds-${{ matrix.os }}-${{ matrix.arch }}
+          path: prebuilds
       - run: npm test
       - run: node example/main.js

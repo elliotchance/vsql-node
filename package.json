@@ -35,7 +35,8 @@
     "install": "node-gyp-build",
     "build": "node-gyp rebuild",
     "prebuildify": "prebuildify --napi --strip --tag-libc",
-    "test": "node --expose-gc --test"
+    "test": "node --expose-gc --test",
+    "coverage": "scripts/coverage.sh"
   },
   "dependencies": {
     "node-gyp-build": "^4.8.4"

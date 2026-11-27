@@ -166,10 +166,9 @@ static napi_value get_diag_fields(napi_env env, SQLSMALLINT handle_type, SQLINTE
     if ((rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) || length <= 0) {
       continue;
     }
-    if (length >= (SQLSMALLINT)sizeof(buf)) {
-      length = sizeof(buf) - 1;
-    }
-    if (napi_create_string_utf8(env, (const char *)buf, length, &value) != napi_ok ||
+    // A value that didn't fit was truncated.
+    size_t n = length < (SQLSMALLINT)sizeof(buf) ? (size_t)length : sizeof(buf) - 1;
+    if (napi_create_string_utf8(env, (const char *)buf, n, &value) != napi_ok ||
         napi_set_named_property(env, result, diag_fields[i].name, value) != napi_ok) {
       return NULL;
     }
@@ -377,7 +376,7 @@ static char *get_string(napi_env env, napi_value value, size_t *length) {
 }
 
 static napi_value undefined(napi_env env) {
-  napi_value result;
+  napi_value result = NULL;
   napi_get_undefined(env, &result);
   return result;
 }
@@ -551,7 +550,7 @@ static napi_value transaction_active(napi_env env, napi_callback_info info) {
 }
 
 // getInfo(dbc, infoType, kind) -> value reads SQLGetInfo, as a string (kind
-// "s") or an SQLSMALLINT ("h") or SQLINTEGER ("i").
+// "s") or an SQLSMALLINT ("h").
 static napi_value get_info(napi_env env, napi_callback_info info) {
   ARGS(3);
   int32_t dbc, info_type;
@@ -567,20 +566,14 @@ static napi_value get_info(napi_env env, napi_callback_info info) {
     CHECK(SQL_HANDLE_DBC, dbc, SQLGetInfo(dbc, (SQLSMALLINT)info_type, &v, 0, NULL));
     return number(env, v);
   }
-  if (kind[0] == 'i') {
-    SQLINTEGER v = 0;
-    CHECK(SQL_HANDLE_DBC, dbc, SQLGetInfo(dbc, (SQLSMALLINT)info_type, &v, 0, NULL));
-    return number(env, v);
-  }
 
   SQLCHAR buf[1024];
   SQLSMALLINT length = 0;
   CHECK(SQL_HANDLE_DBC, dbc,
         SQLGetInfo(dbc, (SQLSMALLINT)info_type, buf, sizeof(buf), &length));
-  if (length >= (SQLSMALLINT)sizeof(buf)) {
-    length = sizeof(buf) - 1;
-  }
-  NAPI_CALL(napi_create_string_utf8(env, (const char *)buf, length, &result));
+  // A value that didn't fit was truncated.
+  size_t size = length < (SQLSMALLINT)sizeof(buf) ? (size_t)length : sizeof(buf) - 1;
+  NAPI_CALL(napi_create_string_utf8(env, (const char *)buf, size, &result));
   return result;
 }
 
@@ -622,23 +615,6 @@ static napi_value desc_field(napi_env env, napi_callback_info info) {
   }
   CHECK(SQL_HANDLE_DESC, desc, rc);
   return number(env, kind[0] == 'h' ? h : i);
-}
-
-// execDirect(stmt, query)
-static napi_value exec_direct(napi_env env, napi_callback_info info) {
-  ARGS(2);
-  int32_t stmt;
-  NAPI_CALL(napi_get_value_int32(env, argv[0], &stmt));
-  size_t length;
-  char *query = get_string(env, argv[1], &length);
-  if (query == NULL) {
-    return NULL;
-  }
-
-  SQLRETURN rc = SQLExecDirect(stmt, (SQLCHAR *)query, (SQLINTEGER)length);
-  free(query);
-  CHECK(SQL_HANDLE_STMT, stmt, rc);
-  return undefined(env);
 }
 
 // prepare(stmt, query)
@@ -1248,7 +1224,6 @@ NAPI_MODULE_INIT() {
       {"transactionActive", NULL, transaction_active, NULL, NULL, NULL, napi_default, NULL},
       {"getInfo", NULL, get_info, NULL, NULL, NULL, napi_default, NULL},
       {"descField", NULL, desc_field, NULL, NULL, NULL, napi_default, NULL},
-      {"execDirect", NULL, exec_direct, NULL, NULL, NULL, napi_default, NULL},
       {"prepare", NULL, prepare, NULL, NULL, NULL, napi_default, NULL},
       {"execute", NULL, execute, NULL, NULL, NULL, napi_default, NULL},
       {"rowCount", NULL, row_count, NULL, NULL, NULL, napi_default, NULL},

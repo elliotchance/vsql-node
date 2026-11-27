@@ -76,3 +76,15 @@ jobs:
           path: prebuilds
       - run: npm test
       - run: node example/main.js
+
+  # The tests must cover all of lib and src/binding.c (see scripts/coverage.sh).
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm run coverage

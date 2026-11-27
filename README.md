@@ -41,13 +41,43 @@ the same time, use a connection in each
 | `db.get(sql, params)`           | `stmt.get(params)`        | The first row of a query, or `undefined`            |
 | `db.all(sql, params)`           | `stmt.all(params)`        | All the rows of a query                             |
 | `db.iterate(sql, params)`       | `stmt.iterate(params)`    | An iterator of the rows, fetched one at a time      |
-|                                 | `stmt.columns()`          | The name, type, nullability, length, precision and scale of each column |
+|                                 | `stmt.columns()`          | The name, type, nullability, length, precision, scale and key of each column |
+|                                 | `stmt.parameters()`       | The type, nullability, length, precision and scale of each `?` |
 |                                 | `stmt.raw()`              | Each row is an array instead of an object           |
+| `db.info()`                     |                           | The version of vsql, and the file format of the database |
 | `db.close()`                    | `stmt.close()`            | Frees the connection or statement                   |
 
 Each row is an object keyed by the column names, which vsql uppercases unless
 they're quoted (`SELECT x` is `{ X: ... }`). Use `stmt.raw()` when columns have
 the same name.
+
+The `length` of a column is the maximum length of a `CHARACTER` or
+`CHARACTER VARYING` (in characters) or a `BINARY` or `BINARY VARYING` (in
+octets). The `precision` and `scale` are those of a `DECIMAL` or `NUMERIC` (or
+the `precision` of a `DECFLOAT`), or the leading field precision and fractional
+seconds precision of an interval. The others are `null`. When vsql knows the key
+of the rows (such as when they're all the columns of a `PRIMARY KEY`), each of
+its columns has a `key` of `"PRIMARY"` (or `"PREFERRED"` for a key that isn't
+the primary key, such as a `UNIQUE NOT NULL` column).
+
+`stmt.parameters()` describes each `?` with the type that vsql works out from
+where it's used (such as the type of `x` in `x = ?`):
+
+```js
+db.prepare('SELECT * FROM foo WHERE x = ?').parameters();
+// [ { type: 'INTEGER', nullable: true, length: null, precision: null, scale: null } ]
+```
+
+`db.info()` is the version of vsql (such as `buildVersion: "v1.7.58"`), how it
+was built, and the file format versions of the database:
+
+```js
+db.info();
+// { dbmsName: 'vsql', dbmsVersion: '01.07.0058', buildVersion: 'v1.7.58',
+//   buildCommit: '3cafbc3...', buildDate: '2026-11-26', buildVVersion: '0.5.2',
+//   buildVCommit: 'c0bb949', buildCCompiler: 'clang', operatingSystem: 'macos',
+//   machine: 'arm64', fileReadVersion: 0, fileWriteVersion: 0 }
+```
 
 A statement that hasn't been closed is freed when it's garbage collected, as is
 a connection (which rolls back its transaction). Both can be declared with
@@ -70,11 +100,42 @@ db.transaction(() => {
 });
 ```
 
+A transaction in another one (`db.transaction(fn)` while there's already a
+transaction) is a savepoint, which is released when `fn` returns, or rolled back
+to if it throws, so only what `fn` did is undone and the outer transaction
+carries on (like better-sqlite3):
+
+```js
+db.transaction(() => {
+  insert.run([1]);
+  try {
+    db.transaction(() => {
+      insert.run([2]);
+      throw new Error('undo 2');
+    });
+  } catch {}
+  insert.run([3]);
+}); // commits 1 and 3
+```
+
 Ending a transaction closes the rows of its queries, which finishes their
 iterators. `START TRANSACTION`, `COMMIT` and `ROLLBACK` can't be executed as
-statements.
+statements. `SAVEPOINT` and `RELEASE SAVEPOINT` can, and `db.rollback(name)`
+rolls back to a savepoint (the name is an identifier, like in SQL, so `'a'` is
+`A` and `'"a"'` is `a`).
 
-vsql's transactions are `READ COMMITTED`.
+`db.begin(options)` and `db.transaction(fn, options)` take `readOnly` (`false`
+by default) and `isolationLevel` (`"READ COMMITTED"` by default, or
+`"READ UNCOMMITTED"`, `"REPEATABLE READ"` or `"SERIALIZABLE"`):
+
+```js
+db.transaction(() => report(), { readOnly: true, isolationLevel: 'SERIALIZABLE' });
+```
+
+vsql runs `READ UNCOMMITTED` (which must be `readOnly`) as `READ COMMITTED`, and
+`REPEATABLE READ` as `SERIALIZABLE`. A statement outside of a transaction is
+`SERIALIZABLE`. A `SERIALIZABLE` transaction waits for the other connections to
+the file, while a `READ COMMITTED` one fails if it can't commit.
 
 ## Parameters
 
@@ -88,18 +149,24 @@ type, which is cast to the type it's used as:
 | `number`                 | `BIGINT` if it's a safe integer, otherwise `DOUBLE PRECISION` |
 | `bigint`                 | `BIGINT` (`NUMERIC` if it's out of range)              |
 | `string`                 | `CHARACTER VARYING`                                    |
+| `Buffer`, `Uint8Array`   | `BINARY VARYING` (also any other view, or an `ArrayBuffer`) |
 | `Date`                   | `TIMESTAMP(3) WITH TIME ZONE` (in UTC)                 |
 | `vsql.numeric(value)`    | `NUMERIC`                                              |
 | `vsql.date(value)`       | `DATE`                                                 |
 | `vsql.time(value)`       | `TIME` (`WITH TIME ZONE` if it has an offset)          |
 | `vsql.timestamp(value)`  | `TIMESTAMP` (`WITH TIME ZONE` if it has an offset)     |
 
-vsql doesn't cast a `CHARACTER VARYING` to a number, date or time, so a string
-can't be a parameter for those types. Instead, use `vsql.numeric` (from a
-string such as `"-12.50"`, a number or a bigint), `vsql.date`
-(`"YYYY-MM-DD"`), `vsql.time` (`"HH:MM:SS"`) or `vsql.timestamp`
-(`"YYYY-MM-DD HH:MM:SS"`), which take the strings that the columns of those
-types are, so a value can be read and written back:
+A string is cast to the type of the parameter (from where it's used), so it can
+be a parameter for any type that isn't binary, in vsql's format (such as
+`"2024-01-02"` for a `DATE`, `"1.5E+400"` for a `DECFLOAT` or `"-1-02"` for an
+`INTERVAL YEAR TO MONTH`). A binary string can only be a `Buffer` (or another
+view), and a `Buffer` can only be a binary string.
+
+`vsql.numeric` (from a string such as `"-12.50"`, a number or a bigint),
+`vsql.date` (`"YYYY-MM-DD"`), `vsql.time` (`"HH:MM:SS"`) and `vsql.timestamp`
+(`"YYYY-MM-DD HH:MM:SS"`) send a value as that type instead, and take the
+strings that the columns of those types are, so a value can be read and written
+back:
 
 ```js
 db.run('INSERT INTO events (at, price) VALUES (?, ?)', [
@@ -111,7 +178,8 @@ db.run('INSERT INTO events (at, price) VALUES (?, ?)', [
 Times and timestamps have up to 6 fractional digits, and an optional offset
 (`+05:30`, `+0530` or `Z`).
 
-vsql doesn't have a binary type, so a `Buffer` can't be a parameter.
+The value of a `DECFLOAT` or interval column is a string, so it can be written
+back as it is.
 
 ## Columns
 
@@ -121,16 +189,21 @@ vsql doesn't have a binary type, so a `Buffer` can't be a parameter.
 | `BIGINT`                            | `number` (`bigint` with `{ bigint: true }`) |
 | `REAL`, `DOUBLE PRECISION`          | `number`                               |
 | `DECIMAL`, `NUMERIC`                | `string`, such as `"12.50"`            |
-| `CHARACTER`, `VARCHAR`              | `string`                               |
+| `DECFLOAT`                          | `string`, such as `"1.5E+400"`         |
+| `CHARACTER`, `VARCHAR`, `CLOB`      | `string`                               |
+| `BINARY`, `VARBINARY`, `BLOB`       | `Buffer`                               |
 | `BOOLEAN`                           | `boolean`                              |
 | `DATE`                              | `string`, such as `"2024-01-02"`       |
 | `TIME`                              | `string`, such as `"15:04:05.123456"`  |
 | `TIME WITH TIME ZONE`               | `string`, such as `"15:04:05+05:30"`   |
 | `TIMESTAMP`                         | `string`, such as `"2024-01-02T15:04:05.123456"` |
 | `TIMESTAMP WITH TIME ZONE`          | `string`, such as `"2024-01-02T15:04:05.123456+05:30"` |
+| `INTERVAL YEAR TO MONTH`, ...       | `string`, such as `"-1-02"` or `"3 04:05:06.500000"` |
 
-A `NULL` is `null`. Decimals, dates and times are strings, so that no precision
-is lost. A timestamp is in ISO 8601, so one `WITH TIME ZONE` can be given to
+A `NULL` is `null`. Decimals, dates, times and intervals are strings, so that no
+precision is lost. An interval is the string of its literal (`"-1-02"` is
+`INTERVAL '-1-02' YEAR TO MONTH`), and its qualifier is the `type` of the
+column. A timestamp is in ISO 8601, so one `WITH TIME ZONE` can be given to
 `new Date()`.
 
 A `BIGINT` is a `number`, and a `RangeError` if it's out of the range that a
@@ -149,6 +222,20 @@ try {
   if (e instanceof vsql.VsqlError) {
     console.log(e.sqlstate); // 42P01
   }
+}
+```
+
+When vsql gives them, it also has the constraint that was violated
+(`constraintCatalog`, `constraintSchema` and `constraintName`), the table
+(`catalogName`, `schemaName` and `tableName`), the column (`columnName`) and the
+cursor (`cursorName`). `more` is `true` if vsql raised more conditions than it
+kept.
+
+```js
+try {
+  db.run('INSERT INTO foo (id) VALUES (1)');
+} catch (e) {
+  console.log(e.sqlstate, e.constraintName, e.tableName); // 23505 FOO_PRIMARY_KEY FOO
 }
 ```
 

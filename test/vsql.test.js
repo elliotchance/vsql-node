@@ -60,7 +60,21 @@ describe('with a connection to a new in-memory database', () => {
     ["TIMESTAMP '2022-01-02 15:04:05.5'", '2022-01-02T15:04:05.5', 'TIMESTAMP'],
     ["TIMESTAMP '2022-01-02 15:04:05.123+05:30'", '2022-01-02T15:04:05.123+05:30',
       'TIMESTAMP WITH TIME ZONE'],
+    ["CAST('1.5E+400' AS DECFLOAT)", '1.5E+400', 'DECFLOAT'],
+    ['CAST(1 AS DECFLOAT) / 3', '0.3333333333333333333333333333333333', 'DECFLOAT'],
+    ["X'DEADBEEF'", Buffer.from('deadbeef', 'hex'), 'BINARY'],
+    ["CAST(X'00FF' AS BINARY(4))", Buffer.from('00ff0000', 'hex'), 'BINARY'],
+    ["CAST(X'' AS VARBINARY(4))", Buffer.alloc(0), 'BINARY VARYING'],
+    ["CAST(X'01' AS BLOB)", Buffer.from([1]), 'BINARY LARGE OBJECT'],
+    ["CAST('héllo' AS CLOB)", 'héllo', 'CHARACTER LARGE OBJECT'],
+    ["INTERVAL '1-02' YEAR TO MONTH", '1-02', 'INTERVAL YEAR TO MONTH'],
+    ["INTERVAL -'1-02' YEAR TO MONTH", '-1-02', 'INTERVAL YEAR TO MONTH'],
+    ["INTERVAL '5' DAY", '5', 'INTERVAL DAY'],
+    ["INTERVAL '3 04:05:06.5' DAY TO SECOND", '3 04:05:06.500000', 'INTERVAL DAY TO SECOND'],
+    ["INTERVAL '04:05' MINUTE TO SECOND", '4:05.000000', 'INTERVAL MINUTE TO SECOND'],
     ['CAST(NULL AS INTEGER)', null, 'INTEGER'],
+    ['CAST(NULL AS VARBINARY(4))', null, 'BINARY VARYING'],
+    ['CAST(NULL AS INTERVAL YEAR)', null, 'INTERVAL YEAR'],
     ['CAST(NULL AS BOOLEAN)', null, 'BOOLEAN'],
     ['CAST(NULL AS DATE)', null, 'DATE'],
     ['CAST(NULL AS TIMESTAMP WITH TIME ZONE)', null, 'TIMESTAMP WITH TIME ZONE'],
@@ -100,10 +114,12 @@ describe('with a connection to a new in-memory database', () => {
     const stmt = db.prepare('SELECT * FROM foo');
     assert.equal(stmt.reader, true);
     assert.deepEqual(stmt.columns(), [
-      { name: 'A', type: 'INTEGER', nullable: false, length: null, precision: null, scale: null },
+      { name: 'A', type: 'INTEGER', nullable: false, length: null, precision: null, scale: null,
+        key: null },
       { name: 'B', type: 'CHARACTER VARYING', nullable: true, length: 20, precision: null,
-        scale: null },
-      { name: 'C', type: 'NUMERIC', nullable: true, length: null, precision: 10, scale: 3 },
+        scale: null, key: null },
+      { name: 'C', type: 'NUMERIC', nullable: true, length: null, precision: 10, scale: 3,
+        key: null },
     ]);
     stmt.close();
 
@@ -112,6 +128,55 @@ describe('with a connection to a new in-memory database', () => {
     assert.equal(del.reader, false);
     assert.deepEqual(del.columns(), []);
     del.close();
+  });
+
+  test('columns of the new types', () => {
+    db.run(`CREATE TABLE foo (b BINARY(4), vb VARBINARY(10), bl BLOB, cl CLOB, d DECFLOAT(16),
+      ym INTERVAL YEAR(3) TO MONTH, ds INTERVAL DAY TO SECOND(2))`);
+    const col = (name, type, length, precision, scale) =>
+      ({ name, type, nullable: true, length, precision, scale, key: null });
+    assert.deepEqual(db.prepare('SELECT * FROM foo').columns(), [
+      col('B', 'BINARY', 4, null, null),
+      col('VB', 'BINARY VARYING', 10, null, null),
+      col('BL', 'BINARY LARGE OBJECT', null, null, null),
+      col('CL', 'CHARACTER LARGE OBJECT', null, null, null),
+      col('D', 'DECFLOAT', null, 16, null),
+      // The precision of an interval is its leading field precision, and the
+      // scale is its fractional seconds precision.
+      col('YM', 'INTERVAL YEAR TO MONTH', null, 3, null),
+      col('DS', 'INTERVAL DAY TO SECOND', null, 2, 2),
+    ]);
+  });
+
+  test('columns of a key', () => {
+    db.run('CREATE TABLE foo (a INTEGER, b INTEGER, c INTEGER, PRIMARY KEY (a, b))');
+    db.run('CREATE TABLE bar (a INTEGER NOT NULL UNIQUE, b INTEGER)');
+    const keys = (sql) => db.prepare(sql).columns().map((c) => c.key);
+    assert.deepEqual(keys('SELECT c, b, a FROM foo'), [null, 'PRIMARY', 'PRIMARY']);
+    assert.deepEqual(keys('SELECT b, a FROM bar'), [null, 'PREFERRED']);
+
+    // A key that isn't all in the rows isn't a key of the rows.
+    assert.deepEqual(keys('SELECT c, a FROM foo'), [null, null]);
+  });
+
+  test('parameters', () => {
+    db.run(`CREATE TABLE foo (i INTEGER NOT NULL, c VARCHAR(20), n NUMERIC(10, 2), dt DATE,
+      vb VARBINARY(8), d DECFLOAT, ds INTERVAL DAY(3) TO SECOND(2))`);
+    const p = (type, length, precision, scale) =>
+      ({ type, nullable: true, length, precision, scale });
+    const stmt = db.prepare(`SELECT * FROM foo
+      WHERE i = ? AND c = ? AND n = ? AND dt = ? AND vb = ? AND d = ? AND ds = ?`);
+    assert.deepEqual(stmt.parameters(), [
+      p('INTEGER', null, null, null),
+      p('CHARACTER VARYING', 20, null, null),
+      p('NUMERIC', null, 10, 2),
+      p('DATE', null, null, null),
+      p('BINARY VARYING', 8, null, null),
+      p('DECFLOAT', null, 34, null),
+      p('INTERVAL DAY TO SECOND', null, 3, 2),
+    ]);
+    stmt.close();
+    assert.deepEqual(db.prepare('VALUES 1').parameters(), []);
   });
 
   for (const [column, arg, want] of [
@@ -145,8 +210,27 @@ describe('with a connection to a new in-memory database', () => {
     ['dt', vsql.date('2022-01-02'), '2022-01-02'],
     ['tm', vsql.time('15:04:05.123456'), '15:04:05.123456'],
     ['tt', vsql.time('15:04:05+05:30'), '15:04:05.000000+05:30'],
+    ['bi', Buffer.from('hi'), Buffer.from('hi\0\0', 'latin1')],
+    ['vb', Buffer.from([0, 1, 255]), Buffer.from([0, 1, 255])],
+    ['vb', new Uint8Array([1, 2]), Buffer.from([1, 2])],
+    ['vb', new Uint16Array([0x0201]), Buffer.from([1, 2])],
+    ['vb', new Uint8Array([9, 8]).buffer, Buffer.from([9, 8])],
+    ['vb', new DataView(new Uint8Array([1, 2, 3]).buffer, 1), Buffer.from([2, 3])],
+    ['vb', Buffer.alloc(0), Buffer.alloc(0)],
+    ['bl', Buffer.alloc(1000, 7), Buffer.alloc(1000, 7)],
+    ['cl', 'é'.repeat(300), 'é'.repeat(300)],
+    ['df', '1.5E+400', '1.5E+400'],
+    ['df', 0.1, '0.1'],
+    ['df', vsql.numeric('-12.50'), '-12.50'],
+    ['ym', '-1-2', '-1-02'],
+    ['ym', '5-11', '5-11'],
+    ['dts', '123 4:05:06.25', '123 04:05:06.250000'],
+    // A string is cast to the type of the parameter.
+    ['n', '-12.5', '-12.50000'],
+    ['dt', '2022-01-02', '2022-01-02'],
     ['i', null, null],
     ['c', undefined, null],
+    ['vb', null, null],
     ['bo', null, null],
     ['dt', null, null],
   ]) {
@@ -155,23 +239,29 @@ describe('with a connection to a new in-memory database', () => {
         s SMALLINT, i INTEGER, b BIGINT, r REAL, d DOUBLE PRECISION,
         n NUMERIC(20, 5), c VARCHAR(100), bo BOOLEAN,
         ts TIMESTAMP(6), tz TIMESTAMP(6) WITH TIME ZONE, dt DATE,
-        tm TIME(6), tt TIME(6) WITH TIME ZONE)`);
+        tm TIME(6), tt TIME(6) WITH TIME ZONE, bi BINARY(4), vb VARBINARY(1000),
+        bl BLOB, cl CLOB, df DECFLOAT, ym INTERVAL YEAR TO MONTH,
+        dts INTERVAL DAY(3) TO SECOND(6))`);
       db.run(`INSERT INTO foo (${column}) VALUES (?)`, [arg]);
 
       // A BIGINT that's out of the range of a number is read as a string.
       const select = typeof want === 'string' && column === 'b'
         ? `SELECT CAST(${column} AS VARCHAR(30)) FROM foo` : `SELECT ${column} FROM foo`;
-      assert.equal(scalar(db, select), want);
+      assert.deepEqual(scalar(db, select), want);
     });
   }
 
   test('a column value can be a parameter', () => {
-    db.run('CREATE TABLE foo (n NUMERIC(10, 2), d DATE, t TIME(6), ts TIMESTAMP(6) WITH TIME ZONE)');
-    db.run(`INSERT INTO foo (n, d, t, ts) VALUES
-      (1.5, DATE '2022-01-02', TIME '15:04:05.25', TIMESTAMP '2022-01-02 15:04:05.5-04:00')`);
+    db.run(`CREATE TABLE foo (n NUMERIC(10, 2), d DATE, t TIME(6), ts TIMESTAMP(6) WITH TIME ZONE,
+      vb VARBINARY(4), df DECFLOAT, ym INTERVAL YEAR TO MONTH, ds INTERVAL DAY TO SECOND)`);
+    db.run(`INSERT INTO foo (n, d, t, ts, vb, df, ym, ds) VALUES
+      (1.5, DATE '2022-01-02', TIME '15:04:05.25', TIMESTAMP '2022-01-02 15:04:05.5-04:00',
+       X'00FF', CAST('1.5E+400' AS DECFLOAT), INTERVAL -'1-02' YEAR TO MONTH,
+       INTERVAL '3 04:05:06.5' DAY TO SECOND)`);
     const row = db.get('SELECT * FROM foo');
-    db.run('INSERT INTO foo (n, d, t, ts) VALUES (?, ?, ?, ?)',
-      [vsql.numeric(row.N), vsql.date(row.D), vsql.time(row.T), vsql.timestamp(row.TS)]);
+    db.run('INSERT INTO foo (n, d, t, ts, vb, df, ym, ds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [vsql.numeric(row.N), vsql.date(row.D), vsql.time(row.T), vsql.timestamp(row.TS), row.VB,
+        row.DF, row.YM, row.DS]);
     assert.deepEqual(db.all('SELECT * FROM foo'), [row, row]);
   });
 
@@ -190,7 +280,7 @@ describe('with a connection to a new in-memory database', () => {
   for (const [params, error, message] of [
     [{ i: 1 }, TypeError, /named parameters/],
     ['1', TypeError, /must be an array/],
-    [[Buffer.from('bytes')], TypeError, /parameter 1: .*binary/],
+    [[Buffer.from('bytes')], vsql.VsqlError, /restricted data type/],
     [[{}], TypeError, /unsupported type Object/],
     [[Symbol('x')], TypeError, /unsupported type symbol/],
     [[new Date(NaN)], RangeError, /invalid Date/],
@@ -262,6 +352,60 @@ describe('with a connection to a new in-memory database', () => {
       assert.match(e.sqlstate, /^23/);
       return true;
     });
+  });
+
+  for (const [sql, sqlstate, fields] of [
+    ['INSERT INTO foo (id, x) VALUES (1, 1)', '23505', {
+      constraintCatalog: ':memory:', constraintSchema: 'PUBLIC', constraintName: 'FOO_PRIMARY_KEY',
+      catalogName: ':memory:', schemaName: 'PUBLIC', tableName: 'FOO',
+    }],
+    ['INSERT INTO foo (id, x) VALUES (2, -1)', '23514', {
+      constraintCatalog: ':memory:', constraintSchema: 'PUBLIC', constraintName: 'POSITIVE',
+      catalogName: ':memory:', schemaName: 'PUBLIC', tableName: 'FOO',
+    }],
+    ['INSERT INTO bar (id) VALUES (5)', '23503', {
+      constraintCatalog: ':memory:', constraintSchema: 'PUBLIC', constraintName: 'FK_FOO',
+      catalogName: ':memory:', schemaName: 'PUBLIC', tableName: 'BAR',
+    }],
+    ['SELECT * FROM nope', '42P01', {
+      catalogName: ':memory:', schemaName: 'PUBLIC', tableName: 'NOPE',
+    }],
+    ['SELECT nope FROM foo', '42601', { columnName: 'NOPE' }],
+  ]) {
+    test(`error fields ${sql}`, () => {
+      db.run('CREATE TABLE foo (id INTEGER PRIMARY KEY, x INTEGER CONSTRAINT positive CHECK (x > 0))');
+      db.run('CREATE TABLE bar (id INTEGER CONSTRAINT fk_foo REFERENCES foo (id))');
+      db.run('INSERT INTO foo (id, x) VALUES (1, 1)');
+      assert.throws(() => db.run(sql), (e) => {
+        assert.ok(e instanceof vsql.VsqlError);
+        assert.equal(e.sqlstate, sqlstate);
+        const got = {};
+        for (const name of ['constraintCatalog', 'constraintSchema', 'constraintName',
+          'catalogName', 'schemaName', 'tableName', 'columnName', 'cursorName']) {
+          if (name in e) {
+            got[name] = e[name];
+          }
+        }
+        assert.deepEqual(got, fields);
+        assert.equal(e.more, false);
+        return true;
+      });
+    });
+  }
+
+  test('info', () => {
+    const info = db.info();
+    assert.equal(info.dbmsName, 'vsql');
+    assert.match(info.dbmsVersion, /^\d{2}\.\d{2}\.\d{4}$/);
+    assert.match(info.buildVersion, /^(v\d+\.\d+\.\d+)?$/);
+    assert.match(info.buildDate, /^\d{4}-\d{2}-\d{2}$/);
+    for (const name of ['buildCommit', 'buildVVersion', 'buildVCommit', 'buildCCompiler',
+      'operatingSystem', 'machine']) {
+      assert.equal(typeof info[name], 'string', name);
+    }
+    // A database in memory doesn't have a file format.
+    assert.equal(info.fileReadVersion, 0);
+    assert.equal(info.fileWriteVersion, 0);
   });
 
   test('changes', () => {
@@ -449,6 +593,97 @@ test('transactions', (t) => {
   db.commit();
   assert.equal(rows.next().done, true);
   assert.equal(stmt.all().length, 3);
+  db.close();
+});
+
+test('nested transactions use savepoints', (t) => {
+  const file = tempPath(t);
+  const db = vsql.connect(file);
+  db.run('CREATE TABLE foo (x INTEGER)');
+  const xs = () => db.all('SELECT x FROM foo ORDER BY x').map((r) => r.X);
+
+  db.transaction(() => {
+    db.run('INSERT INTO foo (x) VALUES (1)');
+
+    // Only what the inner transaction did is rolled back.
+    assert.throws(() => db.transaction(() => {
+      db.run('INSERT INTO foo (x) VALUES (2)');
+      throw new Error('inner');
+    }), /inner/);
+    assert.equal(db.inTransaction, true);
+    assert.deepEqual(xs(), [1]);
+
+    // A statement that fails in the inner transaction is rolled back too.
+    assert.throws(() => db.transaction(() => {
+      db.run('INSERT INTO foo (x) VALUES (3)');
+      db.run('INSERT INTO foo (x) VALUES (1 / 0)');
+    }), vsql.VsqlError);
+    assert.deepEqual(xs(), [1]);
+
+    assert.equal(db.transaction(() => db.transaction(() => {
+      db.run('INSERT INTO foo (x) VALUES (4)');
+      return 'deep';
+    })), 'deep');
+    assert.throws(() => db.transaction(() => {}, { readOnly: true }), /can't have options/);
+  });
+  assert.equal(db.inTransaction, false);
+  assert.deepEqual(xs(), [1, 4]);
+  assert.equal(count(file), 2);
+
+  // The outer transaction still rolls back what the inner ones committed.
+  assert.throws(() => db.transaction(() => {
+    db.transaction(() => db.run('INSERT INTO foo (x) VALUES (5)'));
+    throw new Error('outer');
+  }), /outer/);
+  assert.deepEqual(xs(), [1, 4]);
+  db.close();
+});
+
+test('rollback to a savepoint', (t) => {
+  const db = vsql.connect(tempPath(t));
+  db.run('CREATE TABLE foo (x INTEGER)');
+  db.begin();
+  db.run('INSERT INTO foo (x) VALUES (1)');
+  db.run('SAVEPOINT a');
+  db.run('INSERT INTO foo (x) VALUES (2)');
+  db.run('SAVEPOINT "b c"');
+  db.run('INSERT INTO foo (x) VALUES (3)');
+  db.rollback('"b c"');
+  assert.equal(scalar(db, 'SELECT COUNT(*) FROM foo'), 2);
+  db.rollback('a');
+  assert.equal(scalar(db, 'SELECT COUNT(*) FROM foo'), 1);
+  db.run('RELEASE SAVEPOINT a');
+  assert.throws(() => db.rollback('a'), (e) => e.sqlstate === '3B001');
+  assert.throws(() => db.rollback(1), TypeError);
+  assert.equal(db.inTransaction, true);
+  db.commit();
+  assert.equal(scalar(db, 'SELECT COUNT(*) FROM foo'), 1);
+  db.close();
+});
+
+test('transaction options', (t) => {
+  const db = vsql.connect(tempPath(t));
+  db.run('CREATE TABLE foo (x INTEGER)');
+
+  assert.throws(() => db.transaction(() => db.run('INSERT INTO foo (x) VALUES (1)'),
+    { readOnly: true }), (e) => e.sqlstate === '25006');
+  assert.equal(db.inTransaction, false);
+  assert.deepEqual(db.transaction(() => db.all('SELECT * FROM foo'), { readOnly: true }), []);
+
+  for (const isolationLevel of ['READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE']) {
+    db.begin({ isolationLevel });
+    db.run('INSERT INTO foo (x) VALUES (1)');
+    db.commit();
+  }
+  assert.equal(scalar(db, 'SELECT COUNT(*) FROM foo'), 3);
+
+  // READ UNCOMMITTED must be READ ONLY.
+  db.begin({ readOnly: true, isolationLevel: 'READ UNCOMMITTED' });
+  db.rollback();
+  assert.throws(() => db.begin({ isolationLevel: 'READ UNCOMMITTED' }),
+    (e) => e.sqlstate === '42601');
+  assert.throws(() => db.begin({ isolationLevel: 'read committed' }), RangeError);
+  assert.equal(db.inTransaction, false);
   db.close();
 });
 

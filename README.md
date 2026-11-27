@@ -146,7 +146,7 @@ type, which is cast to the type it's used as:
 |--------------------------|--------------------------------------------------------|
 | `null`, `undefined`      | `NULL`                                                 |
 | `boolean`                | `BOOLEAN`                                              |
-| `number`                 | `BIGINT` if it's a safe integer, otherwise `DOUBLE PRECISION` |
+| `number`                 | `BIGINT` if it's a safe integer, otherwise `DOUBLE PRECISION` (`NaN` and `±Infinity` are a `RangeError`) |
 | `bigint`                 | `BIGINT` (`NUMERIC` if it's out of range)              |
 | `string`                 | `CHARACTER VARYING`                                    |
 | `Buffer`, `Uint8Array`   | `BINARY VARYING` (also any other view, or an `ArrayBuffer`) |

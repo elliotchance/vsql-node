@@ -326,6 +326,15 @@ npm install   # compiles the addon into build/Release
 npm test
 ```
 
+The tests must cover every line and branch of `lib`, and every line of
+`src/binding.c`. `npm run coverage` (on Linux or macOS) compiles the addon with
+gcov, runs the tests and fails if anything wasn't run, listing what wasn't.
+It's checked on each pull request. The addon it compiles includes
+`test/fault.h`, so that `test/faults.test.js` can make each of the addon's
+calls (to `malloc`, Node-API and libvsql) fail in turn, which reaches the code
+that handles those failures. Run `npm run build` afterwards to compile the
+addon normally again.
+
 ### Updating vsql
 
 `internal/amalgamation` is the libvsql C from a vsql release

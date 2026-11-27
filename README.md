@@ -148,6 +148,13 @@ db.release('a');
 db.commit(); // commits 1
 ```
 
+vsql rolls back the whole transaction for some errors, such as a `40001`
+serialization failure (other errors only undo the statement). After that,
+`db.inTransaction` is `false` and each statement is committed on its own again.
+If `fn` of `db.transaction(fn)` catches the error, the statements after it throw
+a `TypeError` (rather than being committed one at a time), and so does
+`db.transaction(fn)` when `fn` returns.
+
 `db.begin(options)` and `db.transaction(fn, options)` take `readOnly` (`false`
 by default) and `isolationLevel` (`"READ COMMITTED"` by default, or
 `"READ UNCOMMITTED"`, `"REPEATABLE READ"` or `"SERIALIZABLE"`):

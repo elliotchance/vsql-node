@@ -534,6 +534,22 @@ static napi_value end_savepoint(napi_env env, napi_callback_info info) {
   return undefined(env);
 }
 
+// transactionActive(dbc) -> bool is whether the connection has a transaction
+// (SQL_DIAG_TRANSACTION_ACTIVE). vsql rolls back the whole transaction for
+// some errors, so this is the only way to know after one.
+static napi_value transaction_active(napi_env env, napi_callback_info info) {
+  ARGS(1);
+  int32_t dbc;
+  NAPI_CALL(napi_get_value_int32(env, argv[0], &dbc));
+
+  SQLINTEGER active = 0;
+  CHECK(SQL_HANDLE_DBC, dbc,
+        SQLGetDiagField(SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_TRANSACTION_ACTIVE, &active, 0, NULL));
+  napi_value result;
+  NAPI_CALL(napi_get_boolean(env, active != 0, &result));
+  return result;
+}
+
 // getInfo(dbc, infoType, kind) -> value reads SQLGetInfo, as a string (kind
 // "s") or an SQLSMALLINT ("h") or SQLINTEGER ("i").
 static napi_value get_info(napi_env env, napi_callback_info info) {
@@ -1229,6 +1245,7 @@ NAPI_MODULE_INIT() {
       {"startTran", NULL, start_tran, NULL, NULL, NULL, napi_default, NULL},
       {"endTran", NULL, end_tran, NULL, NULL, NULL, napi_default, NULL},
       {"endSavepoint", NULL, end_savepoint, NULL, NULL, NULL, napi_default, NULL},
+      {"transactionActive", NULL, transaction_active, NULL, NULL, NULL, napi_default, NULL},
       {"getInfo", NULL, get_info, NULL, NULL, NULL, napi_default, NULL},
       {"descField", NULL, desc_field, NULL, NULL, NULL, napi_default, NULL},
       {"execDirect", NULL, exec_direct, NULL, NULL, NULL, napi_default, NULL},

@@ -133,6 +133,10 @@ export class Connection {
   readonly name: string;
   readonly bigint: boolean;
   readonly open: boolean;
+  /**
+   * Whether there's a transaction. It's false after vsql rolls back the
+   * transaction (such as for a 40001 serialization failure).
+   */
   readonly inTransaction: boolean;
 
   /** Prepares a statement, with a "?" for each parameter. */
@@ -166,7 +170,9 @@ export class Connection {
    * Calls fn in a transaction, which is committed when it returns (and its
    * value is returned), or rolled back if it throws. In another transaction,
    * it's a savepoint instead (and it can't have options). fn can't call commit
-   * or rollback (without a savepoint), which throw a TypeError.
+   * or rollback (without a savepoint), which throw a TypeError. If vsql rolls
+   * back the transaction and fn catches the error, the statements after it,
+   * and transaction itself, throw a TypeError.
    */
   transaction<T>(fn: () => T, options?: TransactionOptions): T;
 

@@ -120,9 +120,23 @@ db.transaction(() => {
 
 Ending a transaction closes the rows of its queries, which finishes their
 iterators. `START TRANSACTION`, `COMMIT` and `ROLLBACK` can't be executed as
-statements. `SAVEPOINT` and `RELEASE SAVEPOINT` can, and `db.rollback(name)`
-rolls back to a savepoint (the name is an identifier, like in SQL, so `'a'` is
-`A` and `'"a"'` is `a`).
+statements.
+
+In a transaction, `db.savepoint(name)` makes a savepoint, `db.rollback(name)`
+rolls back what came after it (and the transaction carries on), and
+`db.release(name)` releases it (and the savepoints after it), keeping what came
+after it. The name is an identifier, like in SQL, so `'a'` is `A` and `'"a"'` is
+`a`. They throw a `TypeError` if there's no transaction:
+
+```js
+db.begin();
+insert.run([1]);
+db.savepoint('a');
+insert.run([2]);
+db.rollback('a');
+db.release('a');
+db.commit(); // commits 1
+```
 
 `db.begin(options)` and `db.transaction(fn, options)` take `readOnly` (`false`
 by default) and `isolationLevel` (`"READ COMMITTED"` by default, or

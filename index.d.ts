@@ -152,6 +152,16 @@ export class Connection {
    */
   rollback(savepoint?: string): void;
   /**
+   * Makes a savepoint in the transaction. The name is an identifier, like in
+   * SQL. It throws a TypeError if there's no transaction.
+   */
+  savepoint(name: string): void;
+  /**
+   * Releases a savepoint (and the savepoints after it), keeping what came
+   * after it. It throws a TypeError if there's no transaction.
+   */
+  release(name: string): void;
+  /**
    * Calls fn in a transaction, which is committed when it returns (and its
    * value is returned), or rolled back if it throws. In another transaction,
    * it's a savepoint instead (and it can't have options).

@@ -124,6 +124,10 @@ db.transaction(() => {
 }); // commits 1 and 3
 ```
 
+`fn` can't call `db.commit()` or `db.rollback()` (they throw a `TypeError`, like
+in better-sqlite3), since `db.transaction(fn)` ends the transaction (or the
+savepoint) itself.
+
 Ending a transaction closes the rows of its queries, which finishes their
 iterators. `START TRANSACTION`, `COMMIT` and `ROLLBACK` can't be executed as
 statements. `SAVEPOINT` and `RELEASE SAVEPOINT` can, and `db.rollback(name)`

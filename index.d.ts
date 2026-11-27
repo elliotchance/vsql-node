@@ -43,8 +43,9 @@ export interface TypeInfo {
    */
   length: number | null;
   /**
-   * The precision of a DECIMAL, NUMERIC or DECFLOAT, or the leading field
-   * precision of an interval.
+   * The precision of a DECIMAL, NUMERIC or DECFLOAT, the fractional seconds
+   * precision of a TIME or TIMESTAMP (with or without a time zone), or the
+   * leading field precision of an interval.
    */
   precision: number | null;
   /**

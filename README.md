@@ -55,7 +55,9 @@ The `length` of a column is the maximum length of a `CHARACTER` or
 `CHARACTER VARYING` (in characters) or a `BINARY` or `BINARY VARYING` (in
 octets). The `precision` and `scale` are those of a `DECIMAL` or `NUMERIC` (or
 the `precision` of a `DECFLOAT`), or the leading field precision and fractional
-seconds precision of an interval. The others are `null`. When vsql knows the key
+seconds precision of an interval. The `precision` of a `TIME` or `TIMESTAMP`
+(with or without a time zone) is its fractional seconds precision (6 for a
+`TIMESTAMP` and 0 for a `TIME`, unless it's given). The others are `null`. When vsql knows the key
 of the rows (such as when they're all the columns of a `PRIMARY KEY`), each of
 its columns has a `key` of `"PRIMARY"` (or `"PREFERRED"` for a key that isn't
 the primary key, such as a `UNIQUE NOT NULL` column).

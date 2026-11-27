@@ -46,11 +46,50 @@ typedef struct {
   napi_ref error_factory;
 } instance;
 
-// NAPI_CALL returns NULL from the function if a Node-API call fails, which
-// has thrown an exception.
+// throw_napi_error throws an error for the Node-API call that just failed, unless
+// it threw an exception itself. Most calls (such as napi_get_value_int32) only
+// return a status, and returning without an exception would be undefined in
+// JavaScript, as if the function worked.
+static void throw_napi_error(napi_env env) {
+  // The error info is only valid until the next Node-API call. Its message is
+  // a constant, so it's still valid after that.
+  const napi_extended_error_info *error = NULL;
+  const char *message = "Node-API call failed";
+  napi_status status = napi_generic_failure;
+  if (napi_get_last_error_info(env, &error) == napi_ok && error != NULL) {
+    status = error->error_code;
+    if (error->error_message != NULL) {
+      message = error->error_message;
+    }
+  }
+
+  bool pending = false;
+  if (napi_is_exception_pending(env, &pending) != napi_ok || pending) {
+    return;
+  }
+
+  // An argument of the wrong type (such as a number that's a string).
+  switch (status) {
+  case napi_invalid_arg:
+  case napi_object_expected:
+  case napi_string_expected:
+  case napi_number_expected:
+  case napi_boolean_expected:
+  case napi_array_expected:
+  case napi_bigint_expected:
+    napi_throw_type_error(env, NULL, message);
+    return;
+  default:
+    napi_throw_error(env, NULL, message);
+  }
+}
+
+// NAPI_CALL throws an error (see throw_napi_error) and returns NULL from the
+// function if a Node-API call fails.
 #define NAPI_CALL(call)                                                        \
   do {                                                                         \
     if ((call) != napi_ok) {                                                   \
+      throw_napi_error(env);                                                        \
       return NULL;                                                             \
     }                                                                          \
   } while (0)
@@ -70,6 +109,7 @@ static void throw_error_fields(napi_env env, const char *sqlstate, const char *m
 
   napi_value args[3], global, err;
   if (fields == NULL && napi_get_undefined(env, &fields) != napi_ok) {
+    throw_napi_error(env);
     return;
   }
   args[2] = fields;
@@ -77,6 +117,7 @@ static void throw_error_fields(napi_env env, const char *sqlstate, const char *m
       napi_create_string_utf8(env, message, length, &args[1]) != napi_ok ||
       napi_get_global(env, &global) != napi_ok ||
       napi_call_function(env, global, factory, 3, args, &err) != napi_ok) {
+    throw_napi_error(env);
     return;
   }
   napi_throw(env, err);
@@ -199,6 +240,7 @@ static int check(napi_env env, SQLRETURN rc, SQLSMALLINT handle_type, SQLINTEGER
 static int args(napi_env env, napi_callback_info info, size_t n, napi_value *argv) {
   size_t argc = n;
   if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok) {
+    throw_napi_error(env);
     return -1;
   }
   if (argc < n) {
@@ -220,6 +262,7 @@ static int args(napi_env env, napi_callback_info info, size_t n, napi_value *arg
 // or NULL if it isn't a string (which has thrown an exception).
 static char *get_string(napi_env env, napi_value value, size_t *length) {
   if (napi_get_value_string_utf8(env, value, NULL, 0, length) != napi_ok) {
+    throw_napi_error(env);
     return NULL;
   }
 
@@ -229,6 +272,7 @@ static char *get_string(napi_env env, napi_value value, size_t *length) {
     return NULL;
   }
   if (napi_get_value_string_utf8(env, value, s, *length + 1, length) != napi_ok) {
+    throw_napi_error(env);
     free(s);
     return NULL;
   }
@@ -526,6 +570,7 @@ static int bind_param(napi_env env, SQLINTEGER stmt, SQLSMALLINT n, napi_value a
   napi_value fields[5];
   for (uint32_t i = 0; i < 5; i++) {
     if (napi_get_element(env, array, i, &fields[i]) != napi_ok) {
+      throw_napi_error(env);
       return -1;
     }
   }
@@ -535,11 +580,13 @@ static int bind_param(napi_env env, SQLINTEGER stmt, SQLSMALLINT n, napi_value a
       napi_get_value_int32(env, fields[1], &parameter_type) != napi_ok ||
       napi_get_value_int32(env, fields[2], &column_size) != napi_ok ||
       napi_get_value_int32(env, fields[3], &decimal_digits) != napi_ok) {
+    throw_napi_error(env);
     return -1;
   }
 
   napi_valuetype type;
   if (napi_typeof(env, fields[4], &type) != napi_ok) {
+    throw_napi_error(env);
     return -1;
   }
 
@@ -551,15 +598,18 @@ static int bind_param(napi_env env, SQLINTEGER stmt, SQLSMALLINT n, napi_value a
     if (type == napi_bigint) {
       bool lossless;
       if (napi_get_value_bigint_int64(env, fields[4], &p->i, &lossless) != napi_ok) {
+        throw_napi_error(env);
         return -1;
       }
     } else if (napi_get_value_int64(env, fields[4], &p->i) != napi_ok) {
+      throw_napi_error(env);
       return -1;
     }
     pointer = &p->i;
     buffer_length = sizeof(SQLBIGINT);
   } else if (value_type == SQL_DOUBLE) {
     if (napi_get_value_double(env, fields[4], &p->d) != napi_ok) {
+      throw_napi_error(env);
       return -1;
     }
     pointer = &p->d;
@@ -572,6 +622,7 @@ static int bind_param(napi_env env, SQLINTEGER stmt, SQLSMALLINT n, napi_value a
     void *data;
     if (napi_get_typedarray_info(env, fields[4], &array_type, &length, &data, NULL, NULL) !=
         napi_ok) {
+      throw_napi_error(env);
       return -1;
     }
     if (column_size == 0) {
@@ -625,8 +676,11 @@ static napi_value execute(napi_env env, napi_callback_info info) {
   napi_value result = NULL;
   for (uint32_t i = 0; i < n; i++) {
     napi_value array;
-    if (napi_get_element(env, argv[1], i, &array) != napi_ok ||
-        bind_param(env, stmt, (SQLSMALLINT)(i + 1), array, &params[i]) < 0) {
+    if (napi_get_element(env, argv[1], i, &array) != napi_ok) {
+      throw_napi_error(env);
+      goto done;
+    }
+    if (bind_param(env, stmt, (SQLSMALLINT)(i + 1), array, &params[i]) < 0) {
       goto done;
     }
   }
@@ -884,33 +938,9 @@ static napi_value get_value(napi_env env, SQLINTEGER stmt, SQLSMALLINT column, c
   return result;
 }
 
-// fetch(stmt, kinds, max) -> rows fetches the next rows (at most max, or all
-// of them if max is 0), each as an array. Fewer than max rows means that there
-// are no more. kinds has a character for how each column is read:
-//
-//   i  SQL_BIGINT as a number
-//   I  SQL_BIGINT as a number (a RangeError if it doesn't fit)
-//   b  SQL_BIGINT as a bigint
-//   d  SQL_DOUBLE as a number
-//   r  SQL_REAL as a number
-//   o  SQL_CHAR as a boolean
-//   s  SQL_CHAR as a string
-//   x  SQL_BINARY as a Buffer
-//
-// A NULL is null.
-static napi_value fetch(napi_env env, napi_callback_info info) {
-  ARGS(3);
-  int32_t stmt, max;
-  NAPI_CALL(napi_get_value_int32(env, argv[0], &stmt));
-  NAPI_CALL(napi_get_value_int32(env, argv[2], &max));
-  char kinds[1024];
-  size_t n;
-  NAPI_CALL(napi_get_value_string_latin1(env, argv[1], kinds, sizeof(kinds), &n));
-  if (n >= sizeof(kinds) - 1) {
-    napi_throw_range_error(env, NULL, "too many columns");
-    return NULL;
-  }
-
+// fetch_rows fetches the rows for fetch, with the kind of each column.
+static napi_value fetch_rows(napi_env env, SQLINTEGER stmt, const char *kinds, size_t n,
+                             int32_t max) {
   napi_value rows;
   NAPI_CALL(napi_create_array(env, &rows));
   for (uint32_t r = 0; max == 0 || r < (uint32_t)max; r++) {
@@ -932,6 +962,45 @@ static napi_value fetch(napi_env env, napi_callback_info info) {
     NAPI_CALL(napi_set_element(env, rows, r, row));
   }
 
+  return rows;
+}
+
+// fetch(stmt, kinds, max) -> rows fetches the next rows (at most max, or all
+// of them if max is 0), each as an array. Fewer than max rows means that there
+// are no more. kinds has a character for how each column is read:
+//
+//   i  SQL_BIGINT as a number
+//   I  SQL_BIGINT as a number (a RangeError if it doesn't fit)
+//   b  SQL_BIGINT as a bigint
+//   d  SQL_DOUBLE as a number
+//   r  SQL_REAL as a number
+//   o  SQL_CHAR as a boolean
+//   s  SQL_CHAR as a string
+//   x  SQL_BINARY as a Buffer
+//
+// A NULL is null.
+static napi_value fetch(napi_env env, napi_callback_info info) {
+  ARGS(3);
+  int32_t stmt, max;
+  NAPI_CALL(napi_get_value_int32(env, argv[0], &stmt));
+  NAPI_CALL(napi_get_value_int32(env, argv[2], &max));
+
+  // A query can have any number of columns, so kinds is allocated.
+  size_t n;
+  NAPI_CALL(napi_get_value_string_latin1(env, argv[1], NULL, 0, &n));
+  char *kinds = malloc(n + 1);
+  if (kinds == NULL) {
+    napi_throw_error(env, NULL, "out of memory");
+    return NULL;
+  }
+  if (napi_get_value_string_latin1(env, argv[1], kinds, n + 1, &n) != napi_ok) {
+    throw_napi_error(env);
+    free(kinds);
+    return NULL;
+  }
+
+  napi_value rows = fetch_rows(env, stmt, kinds, n, max);
+  free(kinds);
   return rows;
 }
 

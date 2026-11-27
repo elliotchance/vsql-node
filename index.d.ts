@@ -175,6 +175,7 @@ export class Statement<R = Row> {
   /** Whether the statement returns rows (certain once it's executed). */
   readonly reader: boolean;
 
+  /** Describes each column, as of the last execution (or when prepared). */
   columns(): Column[];
   /** Describes each parameter ("?"), from where it's used. */
   parameters(): ParameterInfo[];

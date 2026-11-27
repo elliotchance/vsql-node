@@ -62,6 +62,10 @@ of the rows (such as when they're all the columns of a `PRIMARY KEY`), each of
 its columns has a `key` of `"PRIMARY"` (or `"PREFERRED"` for a key that isn't
 the primary key, such as a `UNIQUE NOT NULL` column).
 
+The columns are checked each time a statement is executed, so a prepared
+statement follows a table that was replaced or altered after it was prepared
+(the rows and `stmt.columns()` have the new names and types).
+
 `stmt.parameters()` describes each `?` with the type that vsql works out from
 where it's used (such as the type of `x` in `x = ?`):
 

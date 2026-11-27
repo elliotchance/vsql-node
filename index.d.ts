@@ -212,6 +212,43 @@ export class VsqlError extends Error {
   readonly cursorName?: string;
   /** Whether vsql raised more conditions than it kept. */
   readonly more: boolean;
+  /** The other conditions that vsql raised with the error (usually none). */
+  readonly diagnostics: Diagnostic[];
+}
+
+/** A condition that vsql raised with an error. */
+export interface Diagnostic {
+  /** The SQLSTATE, such as "01003". */
+  readonly sqlstate: string;
+  readonly message: string;
+  readonly constraintCatalog?: string;
+  readonly constraintSchema?: string;
+  readonly constraintName?: string;
+  readonly catalogName?: string;
+  readonly schemaName?: string;
+  readonly tableName?: string;
+  readonly columnName?: string;
+  readonly cursorName?: string;
+}
+
+/**
+ * A warning from vsql (such as "01003" when a NULL is eliminated from SUM),
+ * which is given to process.emitWarning.
+ */
+export class VsqlWarning extends Error {
+  readonly name: 'VsqlWarning';
+  /** The SQLSTATE, such as "01003". */
+  readonly sqlstate: string;
+  /** The same as sqlstate. */
+  readonly code: string;
+  readonly constraintCatalog?: string;
+  readonly constraintSchema?: string;
+  readonly constraintName?: string;
+  readonly catalogName?: string;
+  readonly schemaName?: string;
+  readonly tableName?: string;
+  readonly columnName?: string;
+  readonly cursorName?: string;
 }
 
 /** A parameter that's sent as a particular SQL type. */

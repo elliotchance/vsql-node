@@ -8,7 +8,9 @@
 //
 // When a routine fails, the error is made by the function given to
 // setErrorFactory, from the SQLSTATE, message and other fields (see
-// diag_fields) of the first diagnostic record.
+// diag_fields) of the first diagnostic record, with the other records as
+// "diagnostics". When it succeeds with warnings (SQL_SUCCESS_WITH_INFO), the
+// records are given to the warning function given to setErrorFactory.
 
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +46,7 @@ static void vsql_gc_after_node_init(void) {
 // The data of each instance of the addon (one for each thread that loads it).
 typedef struct {
   napi_ref error_factory;
+  napi_ref warn;
 } instance;
 
 // NAPI_CALL returns NULL from the function if a Node-API call fails, which
@@ -103,10 +106,11 @@ static const struct {
     {NULL, 0},
 };
 
-// get_diag_fields is an object of the diagnostic fields of the first record
-// (see diag_fields), and "more" (SQL_DIAG_MORE) if a condition was dropped.
-// It's NULL if the fields can't be read.
-static napi_value get_diag_fields(napi_env env, SQLSMALLINT handle_type, SQLINTEGER handle) {
+// get_diag_fields is an object of the diagnostic fields of a record (see
+// diag_fields), and for the first record "more" (SQL_DIAG_MORE, a header
+// field) if a condition was dropped. It's NULL if the fields can't be read.
+static napi_value get_diag_fields(napi_env env, SQLSMALLINT handle_type, SQLINTEGER handle,
+                                  SQLSMALLINT record) {
   napi_value result, value;
   if (napi_create_object(env, &result) != napi_ok) {
     return NULL;
@@ -116,7 +120,7 @@ static napi_value get_diag_fields(napi_env env, SQLSMALLINT handle_type, SQLINTE
   SQLCHAR buf[4 * 128 + 1];
   for (int i = 0; diag_fields[i].name != NULL; i++) {
     SQLSMALLINT length = 0;
-    SQLRETURN rc = SQLGetDiagField(handle_type, handle, 1, diag_fields[i].field, buf,
+    SQLRETURN rc = SQLGetDiagField(handle_type, handle, record, diag_fields[i].field, buf,
                                    sizeof(buf), &length);
     if ((rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) || length <= 0) {
       continue;
@@ -132,7 +136,7 @@ static napi_value get_diag_fields(napi_env env, SQLSMALLINT handle_type, SQLINTE
 
   SQLINTEGER more = 0;
   SQLRETURN rc = SQLGetDiagField(handle_type, handle, 0, SQL_DIAG_MORE, &more, 0, NULL);
-  if ((rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) && more) {
+  if (record == 1 && (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) && more) {
     if (napi_get_boolean(env, true, &value) != napi_ok ||
         napi_set_named_property(env, result, "more", value) != napi_ok) {
       return NULL;
@@ -142,13 +146,110 @@ static napi_value get_diag_fields(napi_env env, SQLSMALLINT handle_type, SQLINTE
   return result;
 }
 
-// check returns 0 for a return code that isn't an error (SQL_NO_DATA isn't),
-// otherwise it throws the error from the diagnostics of the handle and returns
-// -1.
-static int check(napi_env env, SQLRETURN rc, SQLSMALLINT handle_type, SQLINTEGER handle) {
+// get_message reads the SQLSTATE and message of a diagnostic record. The
+// message must be freed. It returns -1 if there's no such record, or -2 if it's
+// out of memory.
+static int get_message(SQLSMALLINT handle_type, SQLINTEGER handle, SQLSMALLINT record,
+                       SQLCHAR sqlstate[6], SQLCHAR **message, SQLSMALLINT *length) {
+  SQLSMALLINT size = 512;
+  for (;;) {
+    *message = malloc(size);
+    if (*message == NULL) {
+      return -2;
+    }
+
+    SQLRETURN rc = SQLGetDiagRec(handle_type, handle, record, sqlstate, NULL, *message, size,
+                                 length);
+    if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+      free(*message);
+      *message = NULL;
+      return -1;
+    }
+
+    // The message was truncated.
+    if (*length >= size) {
+      size = *length + 1;
+      free(*message);
+      continue;
+    }
+
+    return 0;
+  }
+}
+
+// get_records is an array of the diagnostic records from first, each an object
+// of its sqlstate, message and fields (see get_diag_fields). It's NULL if they
+// can't be read.
+static napi_value get_records(napi_env env, SQLSMALLINT handle_type, SQLINTEGER handle,
+                              SQLSMALLINT first) {
+  SQLINTEGER number = 0;
+  SQLRETURN rc = SQLGetDiagField(handle_type, handle, 0, SQL_DIAG_NUMBER, &number, 0, NULL);
+  if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+    number = 0;
+  }
+
+  napi_value records;
+  if (napi_create_array(env, &records) != napi_ok) {
+    return NULL;
+  }
+  for (SQLINTEGER i = first; i <= number; i++) {
+    SQLCHAR sqlstate[6], *message = NULL;
+    SQLSMALLINT length = 0;
+    if (get_message(handle_type, handle, (SQLSMALLINT)i, sqlstate, &message, &length) < 0) {
+      break;
+    }
+
+    napi_value record = get_diag_fields(env, handle_type, handle, (SQLSMALLINT)i), value;
+    napi_status status = record == NULL ? napi_generic_failure
+                                        : napi_create_string_utf8(env, (const char *)message,
+                                                                  length, &value);
+    free(message);
+    if (status != napi_ok || napi_set_named_property(env, record, "message", value) != napi_ok ||
+        napi_create_string_utf8(env, (const char *)sqlstate, NAPI_AUTO_LENGTH, &value) !=
+            napi_ok ||
+        napi_set_named_property(env, record, "sqlstate", value) != napi_ok ||
+        napi_set_element(env, records, (uint32_t)(i - first), record) != napi_ok) {
+      return NULL;
+    }
+  }
+
+  return records;
+}
+
+// warn gives the diagnostic records of a routine that succeeded with warnings
+// to the warning function. It returns -1 if that throws.
+static int warn(napi_env env, SQLSMALLINT handle_type, SQLINTEGER handle) {
+  instance *inst = NULL;
+  napi_value fn = NULL, records, global, result;
+  napi_get_instance_data(env, (void **)&inst);
+  if (inst == NULL || inst->warn == NULL ||
+      napi_get_reference_value(env, inst->warn, &fn) != napi_ok || fn == NULL) {
+    return 0;
+  }
+
+  records = get_records(env, handle_type, handle, 1);
+  if (records == NULL) {
+    return 0;
+  }
+  if (napi_get_global(env, &global) != napi_ok ||
+      napi_call_function(env, global, fn, 1, &records, &result) != napi_ok) {
+    return -1;
+  }
+
+  return 0;
+}
+
+// check_warn returns 0 for a return code that isn't an error (SQL_NO_DATA
+// isn't), otherwise it throws the error from the diagnostics of the handle and
+// returns -1. If warnings is 1, the warnings of SQL_SUCCESS_WITH_INFO are
+// given to the warning function (see warn). It's 0 when the routine is
+// expected to truncate a value (01004) that's then read in pieces.
+static int check_warn(napi_env env, SQLRETURN rc, SQLSMALLINT handle_type, SQLINTEGER handle,
+                      int warnings) {
   switch (rc) {
-  case SQL_SUCCESS:
   case SQL_SUCCESS_WITH_INFO:
+    return warnings ? warn(env, handle_type, handle) : 0;
+  case SQL_SUCCESS:
   case SQL_NO_DATA:
     return 0;
   case SQL_INVALID_HANDLE:
@@ -156,35 +257,30 @@ static int check(napi_env env, SQLRETURN rc, SQLSMALLINT handle_type, SQLINTEGER
     return -1;
   }
 
-  SQLCHAR sqlstate[6];
-  SQLSMALLINT size = 512, length = 0;
-  SQLCHAR *message = malloc(size);
-  for (;;) {
-    if (message == NULL) {
-      napi_throw_error(env, NULL, "out of memory");
-      return -1;
-    }
-
-    rc = SQLGetDiagRec(handle_type, handle, 1, sqlstate, NULL, message, size, &length);
-    if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
-      free(message);
-      throw_error(env, "HY000", "unknown error", NAPI_AUTO_LENGTH);
-      return -1;
-    }
-
-    // The message was truncated.
-    if (length >= size) {
-      size = length + 1;
-      free(message);
-      message = malloc(size);
-      continue;
-    }
-
-    napi_value fields = get_diag_fields(env, handle_type, handle);
-    throw_error_fields(env, (const char *)sqlstate, (const char *)message, length, fields);
-    free(message);
+  SQLCHAR sqlstate[6], *message = NULL;
+  SQLSMALLINT length = 0;
+  switch (get_message(handle_type, handle, 1, sqlstate, &message, &length)) {
+  case -2:
+    napi_throw_error(env, NULL, "out of memory");
+    return -1;
+  case -1:
+    throw_error(env, "HY000", "unknown error", NAPI_AUTO_LENGTH);
     return -1;
   }
+
+  // The other records (if any) are "diagnostics".
+  napi_value fields = get_diag_fields(env, handle_type, handle, 1);
+  napi_value records = fields == NULL ? NULL : get_records(env, handle_type, handle, 2);
+  if (records != NULL) {
+    napi_set_named_property(env, fields, "diagnostics", records);
+  }
+  throw_error_fields(env, (const char *)sqlstate, (const char *)message, length, fields);
+  free(message);
+  return -1;
+}
+
+static int check(napi_env env, SQLRETURN rc, SQLSMALLINT handle_type, SQLINTEGER handle) {
+  return check_warn(env, rc, handle_type, handle, 1);
 }
 
 // CHECK returns NULL from the function if a libvsql routine fails.
@@ -248,16 +344,22 @@ static napi_value number(napi_env env, double n) {
   return result;
 }
 
-// setErrorFactory(factory)
+// setErrorFactory(factory, warn) sets the function that makes errors, and the
+// function that's called with the records of warnings.
 static napi_value set_error_factory(napi_env env, napi_callback_info info) {
-  ARGS(1);
+  ARGS(2);
   instance *inst = NULL;
   NAPI_CALL(napi_get_instance_data(env, (void **)&inst));
   if (inst->error_factory != NULL) {
     napi_delete_reference(env, inst->error_factory);
     inst->error_factory = NULL;
   }
+  if (inst->warn != NULL) {
+    napi_delete_reference(env, inst->warn);
+    inst->warn = NULL;
+  }
   NAPI_CALL(napi_create_reference(env, argv[0], 1, &inst->error_factory));
+  NAPI_CALL(napi_create_reference(env, argv[1], 1, &inst->warn));
 
   return undefined(env);
 }
@@ -689,7 +791,7 @@ static napi_value describe_col(napi_env env, napi_callback_info info) {
 
     SQLRETURN rc = SQLDescribeCol(stmt, (SQLSMALLINT)n, name, size, &length, &data_type,
                                   &column_size, &decimal_digits, &nullable);
-    if (check(env, rc, SQL_HANDLE_STMT, stmt) < 0) {
+    if (check_warn(env, rc, SQL_HANDLE_STMT, stmt, 0) < 0) {
       free(name);
       return NULL;
     }
@@ -738,7 +840,7 @@ static napi_value get_chars(napi_env env, SQLINTEGER stmt, SQLSMALLINT n) {
   size_t length = 0;
   for (;;) {
     SQLRETURN rc = SQLGetData(stmt, n, SQL_CHAR, buf + length, size - (SQLINTEGER)length, &ind);
-    if (check(env, rc, SQL_HANDLE_STMT, stmt) < 0) {
+    if (check_warn(env, rc, SQL_HANDLE_STMT, stmt, 0) < 0) {
       free(large);
       return NULL;
     }
@@ -786,7 +888,7 @@ static napi_value get_octets(napi_env env, SQLINTEGER stmt, SQLSMALLINT n) {
   for (;;) {
     SQLRETURN rc =
         SQLGetData(stmt, n, SQL_BINARY, buf + length, size - (SQLINTEGER)length, &ind);
-    if (check(env, rc, SQL_HANDLE_STMT, stmt) < 0) {
+    if (check_warn(env, rc, SQL_HANDLE_STMT, stmt, 0) < 0) {
       free(large);
       return NULL;
     }
@@ -939,6 +1041,9 @@ static void free_instance(napi_env env, void *data, void *hint) {
   instance *inst = data;
   if (inst->error_factory != NULL) {
     napi_delete_reference(env, inst->error_factory);
+  }
+  if (inst->warn != NULL) {
+    napi_delete_reference(env, inst->warn);
   }
   free(inst);
 }

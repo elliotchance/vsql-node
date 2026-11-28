@@ -56,6 +56,13 @@
             'OTHER_CFLAGS': ['-fwrapv', '-w', '-Wno-int-conversion'],
           },
         }],
+        ['OS=="linux"', {
+          # The Boehm GC in libvsql finds the data segments of the shared
+          # libraries with dl_iterate_phdr. Without it, the GC can't find them
+          # with musl (such as Alpine), and fails with "Wrong DATASTART/END
+          # pair".
+          'defines': ['HAVE_DL_ITERATE_PHDR', 'DL_ITERATE_PHDR_STRONG'],
+        }],
       ],
     },
   ],

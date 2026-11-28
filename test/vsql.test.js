@@ -370,7 +370,7 @@ describe('with a connection to a new in-memory database', () => {
     ['SELECT * FROM nope', '42P01', {
       catalogName: ':memory:', schemaName: 'PUBLIC', tableName: 'NOPE',
     }],
-    ['SELECT nope FROM foo', '42601', { columnName: 'NOPE' }],
+    ['SELECT nope FROM foo', '42703', { columnName: 'NOPE' }],
   ]) {
     test(`error fields ${sql}`, () => {
       db.run('CREATE TABLE foo (id INTEGER PRIMARY KEY, x INTEGER CONSTRAINT positive CHECK (x > 0))');

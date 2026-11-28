@@ -30,6 +30,34 @@ export type Row = Record<string, Value>;
 export interface ConnectOptions {
   /** A BIGINT column is a bigint, instead of a number. */
   bigint?: boolean;
+  /**
+   * How long (in milliseconds) a SERIALIZABLE transaction (including a
+   * statement outside of a transaction) waits for the other connections to the
+   * file, before it fails with 40001. 0 fails straight away. 5000 by default.
+   */
+  lockTimeout?: number;
+  /**
+   * How long (in milliseconds) CREATE INDEX waits for the transactions that
+   * changed the table, before it fails with 55P03. 60000 by default.
+   */
+  createIndexTimeout?: number;
+  /**
+   * The isolation level of a statement outside of a transaction (begin and
+   * transaction are READ COMMITTED by default). SERIALIZABLE by default.
+   */
+  isolationLevel?: IsolationLevel;
+  /** The number of pages of the file that are kept in memory. 2000 by default. */
+  cacheSize?: number;
+  /**
+   * The size of a page (17 to 65535 octets), only for :memory: and a new file.
+   * 4096 by default.
+   */
+  pageSize?: number;
+  /**
+   * Sync with F_FULLFSYNC on macOS (it does nothing elsewhere), so that commits
+   * survive a power failure. false by default.
+   */
+  fullFsync?: boolean;
 }
 
 /** The type of a column or parameter. */

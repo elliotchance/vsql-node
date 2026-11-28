@@ -19,26 +19,14 @@
 
 #include "libvsql.h"
 
-// The garbage collector's routines (from gc.h, which is compiled into
-// libvsql.c).
-int GC_thread_is_registered(void);
-int GC_unregister_my_thread(void);
-
-// vsql_gc_after_node_init is called when the addon is loaded. libvsql
-// initializes the garbage collector from a C constructor, when the addon is
-// loaded, which registers the thread that loaded it with the collector for
-// good. So the collector could stop that thread, or scan its stack, while it's
-// running JavaScript. Every other thread is only registered while it's in a
-// libvsql routine, and after this that thread is too.
+// libvsql initializes its garbage collector when the addon is loaded, and then
+// unregisters the thread that loaded it, so that the collector only stops or
+// scans a thread while it's in a libvsql routine (not while it's running
+// JavaScript).
 //
 // Unlike Go, Node doesn't replace the signal handlers that the collector uses
 // to stop threads on Linux (SIGPWR and SIGXCPU), unless the program listens
 // for them with process.on.
-static void vsql_gc_after_node_init(void) {
-  if (GC_thread_is_registered()) {
-    GC_unregister_my_thread();
-  }
-}
 
 // The largest integer that a number can hold exactly (2^53 - 1).
 #define MAX_SAFE_INTEGER 9007199254740991LL
@@ -482,6 +470,21 @@ static napi_value set_autocommit(napi_env env, napi_callback_info info) {
   CHECK(SQL_HANDLE_DBC, dbc,
         SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
                           on ? (SQLPOINTER)&autocommit_on : (SQLPOINTER)&autocommit_off, 0));
+  return undefined(env);
+}
+
+// setConnectAttr(dbc, attribute, value) sets an SQLINTEGER connection
+// attribute, such as SQL_ATTR_VSQL_LOCK_TIMEOUT. libvsql reads the value before
+// it returns.
+static napi_value set_connect_attr(napi_env env, napi_callback_info info) {
+  ARGS(3);
+  int32_t dbc, attribute, value;
+  NAPI_CALL(napi_get_value_int32(env, argv[0], &dbc));
+  NAPI_CALL(napi_get_value_int32(env, argv[1], &attribute));
+  NAPI_CALL(napi_get_value_int32(env, argv[2], &value));
+
+  SQLINTEGER v = value;
+  CHECK(SQL_HANDLE_DBC, dbc, SQLSetConnectAttr(dbc, attribute, (SQLPOINTER)&v, 0));
   return undefined(env);
 }
 
@@ -1157,6 +1160,14 @@ static const struct {
     {"SQL_TRANSACTION_READ_UNCOMMITTED", SQL_TRANSACTION_READ_UNCOMMITTED},
     {"SQL_TRANSACTION_REPEATABLE_READ", SQL_TRANSACTION_REPEATABLE_READ},
     {"SQL_TRANSACTION_SERIALIZABLE", SQL_TRANSACTION_SERIALIZABLE},
+    {"SQL_ATTR_VSQL_LOCK_TIMEOUT", SQL_ATTR_VSQL_LOCK_TIMEOUT},
+    {"SQL_ATTR_VSQL_CREATE_INDEX_TIMEOUT", SQL_ATTR_VSQL_CREATE_INDEX_TIMEOUT},
+    {"SQL_ATTR_VSQL_ISOLATION_LEVEL", SQL_ATTR_VSQL_ISOLATION_LEVEL},
+    {"SQL_ATTR_VSQL_CACHE_SIZE", SQL_ATTR_VSQL_CACHE_SIZE},
+    {"SQL_ATTR_VSQL_PAGE_SIZE", SQL_ATTR_VSQL_PAGE_SIZE},
+    {"SQL_ATTR_VSQL_FULL_FSYNC", SQL_ATTR_VSQL_FULL_FSYNC},
+    {"SQL_TRUE", SQL_TRUE},
+    {"SQL_FALSE", SQL_FALSE},
     {"SQL_ATTR_IMP_ROW_DESC", SQL_ATTR_IMP_ROW_DESC},
     {"SQL_ATTR_IMP_PARAM_DESC", SQL_ATTR_IMP_PARAM_DESC},
     {"SQL_DESC_COUNT", SQL_DESC_COUNT},
@@ -1192,15 +1203,6 @@ static const struct {
 };
 
 NAPI_MODULE_INIT() {
-  // The thread that loaded the addon is the only one that's registered with
-  // the garbage collector, and only until the first time the addon is
-  // initialized (by any thread).
-  static int gc_initialized = 0;
-  if (!gc_initialized) {
-    gc_initialized = 1;
-    vsql_gc_after_node_init();
-  }
-
   instance *inst = calloc(1, sizeof(instance));
   if (inst == NULL) {
     napi_throw_error(env, NULL, "out of memory");
@@ -1218,6 +1220,7 @@ NAPI_MODULE_INIT() {
       {"connect", NULL, connect, NULL, NULL, NULL, napi_default, NULL},
       {"disconnect", NULL, disconnect, NULL, NULL, NULL, napi_default, NULL},
       {"setAutocommit", NULL, set_autocommit, NULL, NULL, NULL, napi_default, NULL},
+      {"setConnectAttr", NULL, set_connect_attr, NULL, NULL, NULL, napi_default, NULL},
       {"startTran", NULL, start_tran, NULL, NULL, NULL, napi_default, NULL},
       {"endTran", NULL, end_tran, NULL, NULL, NULL, napi_default, NULL},
       {"endSavepoint", NULL, end_savepoint, NULL, NULL, NULL, napi_default, NULL},

@@ -21,6 +21,18 @@ db.close();
 The database is the path of the file (it's created if it doesn't exist), or
 `:memory:` for a database that only exists for the life of the connection.
 
+`vsql.connect(database, options)` takes these options:
+
+| Option               | Default          |                                                      |
+|----------------------|------------------|------------------------------------------------------|
+| `bigint`             | `false`          | A `BIGINT` column is a `bigint` (see [Columns](#columns)) |
+| `lockTimeout`        | `5000`           | How long (in milliseconds) a `SERIALIZABLE` statement or transaction waits for the other connections to the file, before `40001` (`0` fails straight away, see [API](#api)) |
+| `isolationLevel`     | `"SERIALIZABLE"` | The isolation level of a statement outside of a transaction (see [Transactions](#transactions)) |
+| `createIndexTimeout` | `60000`          | How long (in milliseconds) `CREATE INDEX` waits for the transactions that changed the table, before `55P03` |
+| `cacheSize`          | `2000`           | The number of pages of the file that are kept in memory |
+| `pageSize`           | `4096`           | The size of a page (17 to 65535 octets), only for `:memory:` and a new file |
+| `fullFsync`          | `false`          | Sync with `F_FULLFSYNC` on macOS (it does nothing elsewhere), so that commits survive a power failure |
+
 See [example/main.js](example/main.js) for a complete program:
 
 ```sh
@@ -38,8 +50,9 @@ This includes waiting for a lock: a `SERIALIZABLE` statement or transaction
 (see [Transactions](#transactions)) waits up to 5 seconds for the other
 connections to the file to finish their transactions, and the event loop is
 blocked while it waits. If the other connection is on the same thread, it
-can't finish, so the wait always fails with `40001` after 5 seconds (see
-[#10](https://github.com/elliotchance/vsql-node/issues/10)).
+can't finish, so the wait always fails with `40001` after 5 seconds. To fail
+straight away instead, connect with `{ lockTimeout: 0 }` (and retry later), or
+with `{ isolationLevel: 'READ COMMITTED' }`, which doesn't wait.
 
 Each call is one statement. More than one (`INSERT ...; INSERT ...`) is a
 syntax error (`42601`), although a `;` at the end is allowed. A `--` comment
@@ -199,9 +212,11 @@ db.transaction(() => report(), { readOnly: true, isolationLevel: 'SERIALIZABLE' 
 
 vsql runs `READ UNCOMMITTED` (which must be `readOnly`) as `READ COMMITTED`, and
 `REPEATABLE READ` as `SERIALIZABLE`. A statement outside of a transaction is
-`SERIALIZABLE` (vsql's default). A `SERIALIZABLE` transaction waits (up to 5
-seconds) for the other connections to the file, while a `READ COMMITTED` one
-doesn't wait, and fails with `40001` if another transaction changed the same
+`SERIALIZABLE` (vsql's default), unless the connection has another
+`isolationLevel` (`vsql.connect(file, { isolationLevel: 'READ COMMITTED' })`). A
+`SERIALIZABLE` transaction waits (up to 5 seconds, or the connection's
+`lockTimeout`) for the other connections to the file, while a `READ COMMITTED`
+one doesn't wait, and fails with `40001` if another transaction changed the same
 rows. Since a wait blocks the event loop (see [API](#api)), the default for
 `db.begin()` is `READ COMMITTED` instead of vsql's `SERIALIZABLE`.
 

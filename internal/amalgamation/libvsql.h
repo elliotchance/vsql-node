@@ -316,6 +316,15 @@ typedef SQLINTEGER SQLHDESC;
 #define SQL_ATTR_SAVEPOINT_NAME 10027 /* a savepoint for SQLEndTran */
 #define SQL_ATTR_AUTOCOMMIT     102   /* see SQLSetConnectAttr */
 
+/* Connection attributes for vsql's connection options, see SQLSetConnectAttr.
+ * Each is an SQLINTEGER. */
+#define SQL_ATTR_VSQL_LOCK_TIMEOUT         11100 /* milliseconds, 5000 */
+#define SQL_ATTR_VSQL_CREATE_INDEX_TIMEOUT 11101 /* milliseconds, 60000 */
+#define SQL_ATTR_VSQL_ISOLATION_LEVEL      11102 /* SQL_TRANSACTION_SERIALIZABLE */
+#define SQL_ATTR_VSQL_CACHE_SIZE           11103 /* pages, 2000 */
+#define SQL_ATTR_VSQL_PAGE_SIZE            11104 /* octets, 4096 */
+#define SQL_ATTR_VSQL_FULL_FSYNC           11105 /* SQL_FALSE */
+
 /* SQL_ATTR_AUTOCOMMIT values. */
 #define SQL_AUTOCOMMIT_OFF 0 /* the default */
 #define SQL_AUTOCOMMIT_ON  1 /* commit each statement */
@@ -720,6 +729,21 @@ SQLRETURN SQLBindCol(
  * ValueType, see SQLGetData) is cast to that type, and then to the type of the
  * dynamic parameter (see SQLPrepare).
  *
+ * For a SQL_INTERVAL_* ParameterType, ColumnSize is the length in characters of
+ * the whole value as it's written: the digits of the leading field, plus the
+ * rest of its fields with their separators (3 for each of "-MM", " HH" and
+ * ":MM", so 9 for " HH:MM:SS"), plus the fractional seconds (DecimalDigits and
+ * 1 for the period), plus 1 if the value starts with a sign. For example,
+ * "1000-02" is 7 for SQL_INTERVAL_YEAR_TO_MONTH, and "-1000-02" is 8. The
+ * leading field precision is what's left of ColumnSize, and it can be at most
+ * 8. So ColumnSize can be anything from the length of the value up to the
+ * length of the largest value of the type: 11 for YEAR(8) TO MONTH or 24 for
+ * DAY(8) TO SECOND(6), and 1 more if the value has a sign. A smaller
+ * ColumnSize is 22006 and a larger one (or 0) is 07001, both from SQLExecute
+ * since SQLBindParameter always succeeds. SQLDescribeCol reports the largest
+ * length with a sign (12 and 25 here), which can be passed to
+ * SQLBindParameter for a value with a sign, or reduced by 1 for one without.
+ *
  * StrLen_or_Ind is the length in octets of a string, which must be greater
  * than zero (or SQL_NTS, which also allows an empty string), and it may be
  * SQL_NULL_DATA for a NULL, or SQL_DATA_AT_EXEC to give the value with
@@ -907,7 +931,8 @@ SQLRETURN SQLDataSources(
  * length of the whole name. DataType is one of the data type codes (such as
  * SQL_DOUBLE, or SQL_TYPE_DATE for a DATE). ColumnSize is the maximum length in
  * octets of a string (4 for each character), the number of decimal digits of a
- * number, or the length of a datetime. DecimalDigits is the scale of a DECIMAL
+ * number, or the length of a datetime or interval (the largest value, with a
+ * sign, see SQLBindParameter). DecimalDigits is the scale of a DECIMAL
  * or NUMERIC, or the fractional seconds of a datetime. Nullable is SQL_NO_NULLS
  * or SQL_NULLABLE. These are from the IRD, see SQLGetDescField.
  *
@@ -953,7 +978,13 @@ SQLRETURN SQLDisconnect(
  * SQL_SAVEPOINT_NAME_ROLLBACK and SQL_SAVEPOINT_NAME_RELEASE use the savepoint in
  * SQL_ATTR_SAVEPOINT_NAME, of a connection (SQL_HANDLE_DBC) only. It's 3B001 if it
  * doesn't exist. A savepoint is made by SQLExecDirect with SAVEPOINT. A rollback
- * closes every cursor of the connection that isn't holdable.
+ * closes every cursor of the connection that isn't holdable. This is the only way
+ * to roll back to a savepoint, since SQLExecDirect can't execute ROLLBACK TO
+ * SAVEPOINT (42000).
+ *
+ *   SQLExecDirect(stmt, (SQLCHAR *)"SAVEPOINT a", SQL_NTS);
+ *   SQLSetConnectAttr(dbc, SQL_ATTR_SAVEPOINT_NAME, (SQLPOINTER) "a", SQL_NTS);
+ *   SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_SAVEPOINT_NAME_ROLLBACK);
  *
  *   SQLExecDirect(stmt, (SQLCHAR *)"INSERT INTO foo (x) VALUES (1.23)",
  *                 SQL_NTS);
@@ -999,7 +1030,10 @@ SQLRETURN SQLError(
  *
  * A transaction is started if there isn't one, and it must be ended with
  * SQLEndTran, so START TRANSACTION, COMMIT and ROLLBACK can't be executed
- * (42000). A "--" comment isn't allowed either (42000). A DELETE, INSERT or
+ * (42000). That includes ROLLBACK TO SAVEPOINT, which is a ROLLBACK as well: it's
+ * SQLEndTran with SQL_SAVEPOINT_NAME_ROLLBACK and the savepoint in
+ * SQL_ATTR_SAVEPOINT_NAME. SAVEPOINT and RELEASE SAVEPOINT can be executed. A
+ * "--" comment isn't allowed either (42000). A DELETE, INSERT or
  * UPDATE that doesn't change any rows returns SQL_NO_DATA (with no status
  * record).
  *
@@ -1141,6 +1175,7 @@ SQLRETURN SQLFreeStmt(
  *   SQL_ATTR_AUTO_IPD        SQLINTEGER, always SQL_TRUE
  *   SQL_ATTR_SAVEPOINT_NAME  string, see SQLGetData for SQL_CHAR
  *   SQL_ATTR_AUTOCOMMIT      SQLINTEGER, SQL_AUTOCOMMIT_OFF or _ON
+ *   SQL_ATTR_VSQL_...        SQLINTEGER, see SQLSetConnectAttr
  *
  * BufferLength and StringLength are only used for a string.
  */
@@ -1676,6 +1711,32 @@ SQLRETURN SQLRowCount(
  * statement that fails is rolled back. A transaction started
  * by SQLStartTran isn't committed until SQLEndTran. Turning it on commits the
  * active transaction, if there is one.
+ *
+ * The SQL_ATTR_VSQL_ attributes aren't in the standard either. They're the
+ * options that SQLConnect opens the connection with, so they can only be set
+ * before SQLConnect (or after SQLDisconnect), otherwise it's HY011. Each is an
+ * SQLINTEGER (an invalid value is HY024):
+ *
+ *   SQL_ATTR_VSQL_LOCK_TIMEOUT          how long (in milliseconds) a
+ *       SERIALIZABLE transaction (including a statement outside of a
+ *       transaction) waits for another connection's SERIALIZABLE transaction
+ *       to finish, before it fails with 40001. 0 doesn't wait.
+ *   SQL_ATTR_VSQL_CREATE_INDEX_TIMEOUT  how long (in milliseconds) CREATE
+ *       INDEX waits for transactions that changed the table, before 55P03.
+ *   SQL_ATTR_VSQL_ISOLATION_LEVEL       the isolation level (one of the
+ *       SQLStartTran IsolationLevels) of a transaction that isn't given one by
+ *       SQLStartTran, START TRANSACTION or SET TRANSACTION.
+ *   SQL_ATTR_VSQL_CACHE_SIZE            the number of pages of the file that
+ *       are kept in memory (0 for none).
+ *   SQL_ATTR_VSQL_PAGE_SIZE             the size of a page (17 to 65535
+ *       octets), only for :memory: and a new file.
+ *   SQL_ATTR_VSQL_FULL_FSYNC            SQL_TRUE to sync with F_FULLFSYNC on
+ *       macOS (it does nothing elsewhere), so that commits survive a power
+ *       failure.
+ *
+ *   SQLINTEGER timeout = 0;
+ *   SQLSetConnectAttr(dbc, SQL_ATTR_VSQL_LOCK_TIMEOUT, &timeout, 0);
+ *   SQLConnect(dbc, (SQLCHAR *)"test.vsql", SQL_NTS, NULL, 0, NULL, 0);
  */
 SQLRETURN SQLSetConnectAttr(
     SQLHDBC    ConnectionHandle,

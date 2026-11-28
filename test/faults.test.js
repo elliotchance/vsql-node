@@ -53,7 +53,7 @@ const long = 'x'.repeat(300) + 'é'.repeat(300);
 const octets = Buffer.alloc(600, 7);
 
 function queries(options) {
-  const db = vsql.connect(':memory:', options);
+  const db = vsql.connect(':memory:', { ...options, lockTimeout: 1000 });
   try {
     db.run(`CREATE TABLE t (a INTEGER, b BIGINT, c DOUBLE PRECISION, d REAL,
       e BOOLEAN, f VARCHAR(1000), g VARBINARY(1000), h DATE, i NUMERIC(10, 2),

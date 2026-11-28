@@ -45,7 +45,7 @@ describe('edge cases', () => {
     } finally {
       stmt.close();
     }
-    assert.throws(() => db.iterate('VALUES CAST(? AS INTEGER)', [Symbol('x')]), TypeError);
+    assert.throws(() => db.iterate('VALUES CAST(? AS INTEGER)', [Symbol('x')]).next(), TypeError);
   });
 
   test('long names and messages', () => {

@@ -517,7 +517,7 @@ test('connection close', (t) => {
   assert.throws(() => stmt.get(), /connection is closed/);
   assert.throws(() => db.begin(), /connection is closed/);
   assert.throws(() => db.commit(), /connection is closed/);
-  assert.deepEqual([...rows], []);
+  assert.throws(() => [...rows], /connection is closed/);
   stmt.close();
 
   assert.throws(() => vsql.connect(1), TypeError);
